@@ -1,0 +1,88 @@
+name: Build RIFE libmpv (arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish/update the rife-libmpv-v1 release asset
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - feat/anime4k-rife-3x
+    paths:
+      - native/libmpv/**
+      - .github/workflows/build-rife-libmpv.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: docker.io/debian:bookworm-slim
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout ReKazumi
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/bookworm-backports.list
+          apt-get update
+          apt-get install -y sudo git gcc-multilib libc-dev make automake pkg-config libtool nasm python3-jsonschema wget python3-jinja2 zip unzip python3-pip ca-certificates
+          apt-get install -y -t bookworm-backports meson
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          link-to-sdk: true
+          ndk-version: r27c
+
+      - name: Checkout pinned libmpv build
+        run: |
+          git clone https://github.com/Predidit/libmpv-android-video-build.git /tmp/libmpv-build
+          git -C /tmp/libmpv-build checkout 045cd0f584769a6ed8967624443045b4a33b122d
+
+      - name: Prepare build scripts
+        run: |
+          mkdir -p /tmp/libmpv-build/buildscripts/sdk
+          ln -s "${ANDROID_HOME}" /tmp/libmpv-build/buildscripts/sdk/android-sdk-linux
+          sed -i -e 's/sudo//g' /tmp/libmpv-build/buildscripts/*.sh
+          sed -i 's/download-sdk\.sh/download-sdk-debian\.sh/g' /tmp/libmpv-build/buildscripts/download.sh
+          sed -i -e '/git reset --hard/d' /tmp/libmpv-build/buildscripts/patch.sh
+          chmod +x /tmp/libmpv-build/buildscripts/include/download-sdk-debian.sh
+          chmod +x native/libmpv/build_arm64.sh
+
+      - name: Build arm64 libmpv with RIFE filter
+        run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
+
+      - name: Upload libmpv artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekazumi-rife-libmpv-arm64
+          path: /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
+          if-no-files-found: error
+
+      - name: Publish native runtime release
+        if: inputs.publish_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rife-libmpv-v1
+          name: ReKazumi RIFE libmpv v1
+          prerelease: true
+          files: /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
