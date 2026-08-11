@@ -54,8 +54,8 @@ task downloadDependencies {
 
         def filesToDownload = [
             [
-                url: 'https://github.com/UmocxZzZ/ReKazumi/releases/download/afme-debug-315560e/rekazumi-afme-arm64-v8a.jar',
-                sha256: 'c2183b227ca0dbf65f427f0c4b111352f75ea4ddd215e1007e2e2d3d9020358f',
+                url: 'https://github.com/UmocxZzZ/ReKazumi/releases/download/afme-debug-2147c4f/rekazumi-afme-arm64-v8a.jar',
+                sha256: '6bdba92a6c499cb53496c930bf96a3f98293d1e46deab44f05342ebf17c1a044',
                 name: 'rekazumi-afme-arm64-v8a.jar',
             ],
             [
@@ -76,7 +76,7 @@ task downloadDependencies {
         ]
 
         filesToDownload.each { fileInfo ->
-            def cached = file("$buildDir/afme-debug-315560e/${fileInfo.name}")
+            def cached = file("$buildDir/afme-debug-2147c4f/${fileInfo.name}")
             if (cached.exists() && sha256(cached) != fileInfo.sha256) {
                 cached.delete()
             }
