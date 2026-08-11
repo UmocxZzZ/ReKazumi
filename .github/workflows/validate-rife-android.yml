@@ -79,6 +79,12 @@ jobs:
           grep -q 'lib/arm64-v8a/libmpv.so' /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libmediakitandroidhelper.so' /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libkazumi_rife.so' /tmp/apk-contents.txt
+          python - <<'PY'
+          import json
+
+          with open('build/app/outputs/flutter-apk/output-metadata.json') as metadata:
+              assert json.load(metadata)['applicationId'] == 'com.predidit.rekazumi'
+          PY
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4

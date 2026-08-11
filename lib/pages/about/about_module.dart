@@ -19,7 +19,7 @@ final aboutModule = createModule(
       ..route(
         '/license',
         child: (context, state) => const LicensePage(
-          applicationName: 'Kazumi',
+          applicationName: 'ReKazumi',
           applicationVersion: ApiEndpoints.version,
           applicationLegalese: '开源许可证',
         ),
