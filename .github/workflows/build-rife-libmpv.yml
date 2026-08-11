@@ -108,6 +108,7 @@ jobs:
         with:
           tag_name: rife-runtime-v1
           name: ReKazumi RIFE runtime v1
+          target_commitish: ${{ github.sha }}
           prerelease: true
           files: |
             /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
