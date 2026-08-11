@@ -1,0 +1,81 @@
+name: Validate RIFE Android integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/anime4k-rife-3x
+    paths:
+      - android/**
+      - lib/pages/player/controller/player_frame_interpolation.dart
+      - lib/pages/player/controller/player_playback_controller.dart
+      - lib/pages/settings/player_settings.dart
+      - lib/pages/settings/super_resolution_settings.dart
+      - lib/services/player/rife_model_service.dart
+      - lib/services/storage/settings_keys.dart
+      - packages/media_kit_libs_android_video/**
+      - test/frame_interpolation_mode_test.dart
+      - pubspec.yaml
+      - pubspec.lock
+      - .github/workflows/validate-rife-android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout ReKazumi
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2.16.0
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Check changed Dart formatting
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/pages/player/controller/player_frame_interpolation.dart \
+            lib/pages/player/controller/player_playback_controller.dart \
+            lib/pages/settings/player_settings.dart \
+            lib/pages/settings/super_resolution_settings.dart \
+            lib/services/player/rife_model_service.dart \
+            lib/services/storage/settings_keys.dart \
+            test/frame_interpolation_mode_test.dart
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Analyze Flutter project
+        run: flutter analyze --no-fatal-infos --fatal-warnings
+
+      - name: Build Android arm64 APK
+        run: >-
+          flutter build apk --release
+          --target-platform android-arm64
+          --dart-define=DANDANAPI_APPID=
+          --dart-define=DANDANAPI_KEY=
+          --dart-define=KAZUMI_APPID=
+          --dart-define=KAZUMI_KEY=
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekazumi-rife-android-arm64
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
