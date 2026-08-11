@@ -86,7 +86,7 @@ extern "C" kazumi_rife_handle kazumi_rife_create(
     auto rife = std::make_unique<RIFE>(
         resolved_gpu_id,
         false,
-        true,
+        false,
         1,
         false,
         true,
@@ -171,6 +171,72 @@ extern "C" int kazumi_rife_process(
     set_error(error, error_capacity, "unexpected RIFE inference error");
   }
   return -5;
+}
+
+extern "C" int kazumi_rife_process_pair(
+    kazumi_rife_handle handle,
+    const float *src0_r,
+    const float *src0_g,
+    const float *src0_b,
+    const float *src1_r,
+    const float *src1_g,
+    const float *src1_b,
+    float *dst1_r,
+    float *dst1_g,
+    float *dst1_b,
+    float *dst2_r,
+    float *dst2_g,
+    float *dst2_b,
+    int width,
+    int height,
+    ptrdiff_t stride,
+    char *error,
+    size_t error_capacity) {
+  auto *context = static_cast<RifeContext *>(handle);
+  if (context == nullptr || context->rife == nullptr) {
+    set_error(error, error_capacity, "RIFE context is not initialized");
+    return -1;
+  }
+  if (width <= 0 || height <= 0 || stride < width) {
+    set_error(error, error_capacity, "invalid frame dimensions or stride");
+    return -2;
+  }
+  if (src0_r == nullptr || src0_g == nullptr || src0_b == nullptr ||
+      src1_r == nullptr || src1_g == nullptr || src1_b == nullptr ||
+      dst1_r == nullptr || dst1_g == nullptr || dst1_b == nullptr ||
+      dst2_r == nullptr || dst2_g == nullptr || dst2_b == nullptr) {
+    set_error(error, error_capacity, "frame plane is null");
+    return -3;
+  }
+
+  try {
+    std::lock_guard<std::mutex> lock(context->process_mutex);
+    const int result = context->rife->process_v4_pair(
+        src0_r,
+        src0_g,
+        src0_b,
+        src1_r,
+        src1_g,
+        src1_b,
+        dst1_r,
+        dst1_g,
+        dst1_b,
+        dst2_r,
+        dst2_g,
+        dst2_b,
+        width,
+        height,
+        stride);
+    if (result != 0) {
+      set_error(error, error_capacity, "paired RIFE inference failed");
+    }
+    return result;
+  } catch (const std::exception &exception) {
+    set_error(error, error_capacity, exception.what());
+  } catch (...) {
+    set_error(error, error_capacity, "unexpected paired RIFE inference error");
+  }
+  return -4;
 }
 
 extern "C" void kazumi_rife_destroy(kazumi_rife_handle handle) {

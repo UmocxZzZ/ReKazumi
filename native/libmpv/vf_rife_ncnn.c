@@ -39,6 +39,13 @@ typedef int (*rife_process_fn)(
     const float *, const float *, const float *,
     float *, float *, float *,
     int, int, ptrdiff_t, float, char *, size_t);
+typedef int (*rife_process_pair_fn)(
+    kazumi_rife_handle,
+    const float *, const float *, const float *,
+    const float *, const float *, const float *,
+    float *, float *, float *,
+    float *, float *, float *,
+    int, int, ptrdiff_t, char *, size_t);
 typedef void (*rife_destroy_fn)(kazumi_rife_handle);
 
 struct rife_opts {
@@ -56,6 +63,7 @@ struct priv {
     void *library;
     kazumi_rife_handle rife;
     rife_process_fn process;
+    rife_process_pair_fn process_pair;
     rife_destroy_fn destroy;
 
     struct mp_image *previous;
@@ -250,6 +258,69 @@ static struct mp_image *make_interpolated_frame(
     return make_hold_frame(first, pts);
 }
 
+static bool make_interpolated_pair(
+    struct mp_filter *f,
+    struct mp_image *first,
+    struct mp_image *second,
+    double first_pts,
+    double second_pts,
+    struct mp_image **first_output,
+    struct mp_image **second_output)
+{
+    struct priv *p = f->priv;
+    *first_output = mp_image_alloc(first->imgfmt, first->w, first->h);
+    *second_output = mp_image_alloc(first->imgfmt, first->w, first->h);
+    if (!*first_output || !*second_output)
+        goto fail;
+
+    mp_image_copy_attributes(*first_output, first);
+    mp_image_copy_attributes(*second_output, first);
+    (*first_output)->pts = first_pts;
+    (*second_output)->pts = second_pts;
+
+    if (!compatible_float_planes(first, second, *first_output) ||
+        !compatible_float_planes(first, second, *second_output)) {
+        MP_WARN(f, "RIFE paired frame layout is not compatible.\n");
+        goto fail;
+    }
+
+    char error[KAZUMI_RIFE_ERROR_CAPACITY] = {0};
+    const ptrdiff_t stride = first->stride[0] / (ptrdiff_t)sizeof(float);
+    const int result = p->process_pair(
+        p->rife,
+        (const float *)first->planes[2],
+        (const float *)first->planes[0],
+        (const float *)first->planes[1],
+        (const float *)second->planes[2],
+        (const float *)second->planes[0],
+        (const float *)second->planes[1],
+        (float *)(*first_output)->planes[2],
+        (float *)(*first_output)->planes[0],
+        (float *)(*first_output)->planes[1],
+        (float *)(*second_output)->planes[2],
+        (float *)(*second_output)->planes[0],
+        (float *)(*second_output)->planes[1],
+        first->w,
+        first->h,
+        stride,
+        error,
+        sizeof(error));
+
+    if (result == 0)
+        return true;
+
+    if (!p->inference_warning_shown) {
+        MP_WARN(f, "Paired RIFE inference failed (%d): %s.\n",
+                result, error[0] ? error : "unknown error");
+        p->inference_warning_shown = true;
+    }
+
+fail:
+    mp_image_unrefp(first_output);
+    mp_image_unrefp(second_output);
+    return false;
+}
+
 static void build_pair_output(
     struct mp_filter *f,
     struct mp_image *current)
@@ -280,6 +351,27 @@ static void build_pair_output(
                       difference >= p->opts->scene_threshold;
 
     if (hold) {
+        queue_image(p, make_hold_frame(first, first_pts));
+        queue_image(p, make_hold_frame(first, second_pts));
+        return;
+    }
+
+    if (p->process_pair) {
+        struct mp_image *first_output = NULL;
+        struct mp_image *second_output = NULL;
+        if (make_interpolated_pair(
+                f,
+                first,
+                current,
+                first_pts,
+                second_pts,
+                &first_output,
+                &second_output)) {
+            queue_image(p, first_output);
+            queue_image(p, second_output);
+            return;
+        }
+
         queue_image(p, make_hold_frame(first, first_pts));
         queue_image(p, make_hold_frame(first, second_pts));
         return;
@@ -363,6 +455,7 @@ static bool load_runtime(struct mp_filter *f)
     rife_abi_version_fn abi_version = dlsym(p->library, "kazumi_rife_abi_version");
     rife_create_fn create = dlsym(p->library, "kazumi_rife_create");
     p->process = dlsym(p->library, "kazumi_rife_process");
+    p->process_pair = dlsym(p->library, "kazumi_rife_process_pair");
     p->destroy = dlsym(p->library, "kazumi_rife_destroy");
     if (!abi_version || !create || !p->process || !p->destroy) {
         MP_ERR(f, "libkazumi_rife.so has an incomplete API.\n");
@@ -420,7 +513,8 @@ static struct mp_filter *create_filter(struct mp_filter *parent, void *options)
         return NULL;
     }
 
-    MP_INFO(f, "RIFE-NCNN fixed 3x interpolation enabled.\n");
+    MP_INFO(f, "RIFE-NCNN fixed 3x interpolation enabled (%s path).\n",
+            p->process_pair ? "paired" : "legacy");
     return f;
 }
 

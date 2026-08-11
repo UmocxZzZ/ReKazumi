@@ -30,6 +30,12 @@ public:
                    float* dstR, float* dstG, float* dstB,
                    const int w, const int h, const ptrdiff_t stride, const float timestep) const;
 
+    int process_v4_pair(const float* src0R, const float* src0G, const float* src0B,
+                        const float* src1R, const float* src1G, const float* src1B,
+                        float* dst1R, float* dst1G, float* dst1B,
+                        float* dst2R, float* dst2G, float* dst2B,
+                        const int w, const int h, const ptrdiff_t stride) const;
+
 private:
     ncnn::VulkanDevice* vkdev;
     ncnn::Net flownet;
@@ -37,6 +43,8 @@ private:
     ncnn::Net fusionnet;
     ncnn::Pipeline* rife_preproc;
     ncnn::Pipeline* rife_postproc;
+    ncnn::Pipeline* rife_preproc_normalized;
+    ncnn::Pipeline* rife_postproc_normalized;
     ncnn::Pipeline* rife_flow_tta_avg;
     ncnn::Pipeline* rife_flow_tta_temporal_avg;
     ncnn::Pipeline* rife_out_tta_temporal_avg;

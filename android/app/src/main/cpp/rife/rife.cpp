@@ -4,7 +4,11 @@
 //#include <iostream>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <vector>
+#include <android/log.h>
 #include "benchmark.h"
 
 #include "rife_preproc.comp.hex.h"
@@ -17,6 +21,7 @@
 #include "rife_v2_flow_tta_temporal_avg.comp.hex.h"
 #include "rife_out_tta_temporal_avg.comp.hex.h"
 #include "rife_v4_timestep.comp.hex.h"
+#include "rife_normalized_io.comp.h"
 
 #include "rife_ops.h"
 
@@ -28,6 +33,8 @@ RIFE::RIFE(int gpuid, bool _tta_mode, bool _uhd_mode, int _num_threads, bool _ri
 
     rife_preproc = 0;
     rife_postproc = 0;
+    rife_preproc_normalized = 0;
+    rife_postproc_normalized = 0;
     rife_flow_tta_avg = 0;
     rife_flow_tta_temporal_avg = 0;
     rife_out_tta_temporal_avg = 0;
@@ -51,6 +58,8 @@ RIFE::~RIFE()
     {
         delete rife_preproc;
         delete rife_postproc;
+        delete rife_preproc_normalized;
+        delete rife_postproc_normalized;
         delete rife_flow_tta_avg;
         delete rife_flow_tta_temporal_avg;
         delete rife_out_tta_temporal_avg;
@@ -208,6 +217,50 @@ int RIFE::load(const std::string& modeldir)
             rife_postproc = new ncnn::Pipeline(vkdev);
             rife_postproc->set_optimal_local_size_xyz(8, 8, 3);
             rife_postproc->create(spirv.data(), spirv.size() * 4, specializations);
+        }
+
+        {
+            std::vector<uint32_t> spirv;
+            static ncnn::Mutex lock;
+            {
+                ncnn::MutexLockGuard guard(lock);
+                if (spirv.empty())
+                {
+                    compile_spirv_module(
+                        rife_preproc_normalized_comp_data,
+                        sizeof(rife_preproc_normalized_comp_data),
+                        opt,
+                        spirv);
+                }
+            }
+
+            std::vector<ncnn::vk_specialization_type> no_specializations;
+            rife_preproc_normalized = new ncnn::Pipeline(vkdev);
+            rife_preproc_normalized->set_optimal_local_size_xyz(8, 8, 3);
+            rife_preproc_normalized->create(
+                spirv.data(), spirv.size() * 4, no_specializations);
+        }
+
+        {
+            std::vector<uint32_t> spirv;
+            static ncnn::Mutex lock;
+            {
+                ncnn::MutexLockGuard guard(lock);
+                if (spirv.empty())
+                {
+                    compile_spirv_module(
+                        rife_postproc_normalized_comp_data,
+                        sizeof(rife_postproc_normalized_comp_data),
+                        opt,
+                        spirv);
+                }
+            }
+
+            std::vector<ncnn::vk_specialization_type> no_specializations;
+            rife_postproc_normalized = new ncnn::Pipeline(vkdev);
+            rife_postproc_normalized->set_optimal_local_size_xyz(8, 8, 3);
+            rife_postproc_normalized->create(
+                spirv.data(), spirv.size() * 4, no_specializations);
         }
     }
 
@@ -1351,6 +1404,185 @@ int RIFE::process_v4(const float* src0R, const float* src0G, const float* src0B,
 
     vkdev->reclaim_blob_allocator(blob_vkallocator);
     vkdev->reclaim_staging_allocator(staging_vkallocator);
+
+    return 0;
+}
+
+int RIFE::process_v4_pair(const float* src0R, const float* src0G, const float* src0B,
+                          const float* src1R, const float* src1G, const float* src1B,
+                          float* dst1R, float* dst1G, float* dst1B,
+                          float* dst2R, float* dst2G, float* dst2B,
+                          const int w, const int h, const ptrdiff_t stride) const
+{
+    using clock = std::chrono::steady_clock;
+    const auto started = clock::now();
+    const int channels = 3;
+
+    ncnn::VkAllocator* blob_vkallocator = vkdev->acquire_blob_allocator();
+    ncnn::VkAllocator* staging_vkallocator = vkdev->acquire_staging_allocator();
+
+    ncnn::Option opt = flownet.opt;
+    opt.blob_vkallocator = blob_vkallocator;
+    opt.workspace_vkallocator = blob_vkallocator;
+    opt.staging_vkallocator = staging_vkallocator;
+
+    const int w_padded = (w + padding - 1) / padding * padding;
+    const int h_padded = (h + padding - 1) / padding * padding;
+    const size_t in_out_tile_elemsize = opt.use_fp16_storage ? 2u : 4u;
+
+    // mpv provides normalized planar RGB. Pack each source only once for both
+    // t=1/3 and t=2/3 evaluations. The paired shaders consume this range
+    // directly, avoiding the legacy CPU-side *255 and /255 passes.
+    ncnn::Mat in0(w, h, channels, sizeof(float), 1);
+    ncnn::Mat in1(w, h, channels, sizeof(float), 1);
+    float* in0R = in0.channel(0);
+    float* in0G = in0.channel(1);
+    float* in0B = in0.channel(2);
+    float* in1R = in1.channel(0);
+    float* in1G = in1.channel(1);
+    float* in1B = in1.channel(2);
+    const size_t row_bytes = (size_t)w * sizeof(float);
+    for (int y = 0; y < h; y++)
+    {
+        std::memcpy(in0R + w * y, src0R + stride * y, row_bytes);
+        std::memcpy(in0G + w * y, src0G + stride * y, row_bytes);
+        std::memcpy(in0B + w * y, src0B + stride * y, row_bytes);
+        std::memcpy(in1R + w * y, src1R + stride * y, row_bytes);
+        std::memcpy(in1G + w * y, src1G + stride * y, row_bytes);
+        std::memcpy(in1B + w * y, src1B + stride * y, row_bytes);
+    }
+    const auto prepared = clock::now();
+
+    ncnn::VkCompute cmd(vkdev);
+    ncnn::VkMat in0_gpu;
+    ncnn::VkMat in1_gpu;
+    cmd.record_clone(in0, in0_gpu, opt);
+    cmd.record_clone(in1, in1_gpu, opt);
+
+    ncnn::VkMat in0_gpu_padded;
+    ncnn::VkMat in1_gpu_padded;
+    in0_gpu_padded.create(
+        w_padded, h_padded, channels, in_out_tile_elemsize, 1, blob_vkallocator);
+    in1_gpu_padded.create(
+        w_padded, h_padded, channels, in_out_tile_elemsize, 1, blob_vkallocator);
+
+    auto record_preprocess = [&](const ncnn::VkMat& input,
+                                 ncnn::VkMat& padded) {
+        std::vector<ncnn::VkMat> bindings(2);
+        bindings[0] = input;
+        bindings[1] = padded;
+
+        std::vector<ncnn::vk_constant_type> constants(6);
+        constants[0].i = input.w;
+        constants[1].i = input.h;
+        constants[2].i = input.cstep;
+        constants[3].i = padded.w;
+        constants[4].i = padded.h;
+        constants[5].i = padded.cstep;
+        cmd.record_pipeline(
+            rife_preproc_normalized, bindings, constants, padded);
+    };
+    record_preprocess(in0_gpu, in0_gpu_padded);
+    record_preprocess(in1_gpu, in1_gpu_padded);
+
+    auto record_inference = [&](float timestep, ncnn::VkMat& output) {
+        ncnn::VkMat timestep_gpu_padded;
+        timestep_gpu_padded.create(
+            w_padded, h_padded, 1, in_out_tile_elemsize, 1, blob_vkallocator);
+
+        {
+            std::vector<ncnn::VkMat> bindings(1);
+            bindings[0] = timestep_gpu_padded;
+
+            std::vector<ncnn::vk_constant_type> constants(4);
+            constants[0].i = timestep_gpu_padded.w;
+            constants[1].i = timestep_gpu_padded.h;
+            constants[2].i = timestep_gpu_padded.cstep;
+            constants[3].f = timestep;
+            cmd.record_pipeline(
+                rife_v4_timestep, bindings, constants, timestep_gpu_padded);
+        }
+
+        ncnn::VkMat output_padded;
+        {
+            ncnn::Extractor ex = flownet.create_extractor();
+            ex.set_blob_vkallocator(blob_vkallocator);
+            ex.set_workspace_vkallocator(blob_vkallocator);
+            ex.set_staging_vkallocator(staging_vkallocator);
+            ex.input("in0", in0_gpu_padded);
+            ex.input("in1", in1_gpu_padded);
+            ex.input("in2", timestep_gpu_padded);
+            ex.extract("out0", output_padded, cmd);
+        }
+
+        output.create(w, h, channels, sizeof(float), 1, blob_vkallocator);
+        std::vector<ncnn::VkMat> bindings(2);
+        bindings[0] = output_padded;
+        bindings[1] = output;
+
+        std::vector<ncnn::vk_constant_type> constants(6);
+        constants[0].i = output_padded.w;
+        constants[1].i = output_padded.h;
+        constants[2].i = output_padded.cstep;
+        constants[3].i = output.w;
+        constants[4].i = output.h;
+        constants[5].i = output.cstep;
+        cmd.record_pipeline(
+            rife_postproc_normalized, bindings, constants, output);
+    };
+
+    ncnn::VkMat output1_gpu;
+    ncnn::VkMat output2_gpu;
+    record_inference(1.0f / 3.0f, output1_gpu);
+    record_inference(2.0f / 3.0f, output2_gpu);
+
+    ncnn::Mat output1;
+    ncnn::Mat output2;
+    cmd.record_clone(output1_gpu, output1, opt);
+    cmd.record_clone(output2_gpu, output2, opt);
+    const auto recorded = clock::now();
+
+    cmd.submit_and_wait();
+    const auto completed = clock::now();
+
+    auto copy_output = [&](const ncnn::Mat& output,
+                           float* dstR, float* dstG, float* dstB) {
+        const float* outR = output.channel(0);
+        const float* outG = output.channel(1);
+        const float* outB = output.channel(2);
+        for (int y = 0; y < h; y++)
+        {
+            std::memcpy(dstR + stride * y, outR + w * y, row_bytes);
+            std::memcpy(dstG + stride * y, outG + w * y, row_bytes);
+            std::memcpy(dstB + stride * y, outB + w * y, row_bytes);
+        }
+    };
+    copy_output(output1, dst1R, dst1G, dst1B);
+    copy_output(output2, dst2R, dst2G, dst2B);
+    const auto copied = clock::now();
+
+    vkdev->reclaim_blob_allocator(blob_vkallocator);
+    vkdev->reclaim_staging_allocator(staging_vkallocator);
+
+    static std::atomic<unsigned int> pair_count{0};
+    const unsigned int count = ++pair_count;
+    if (count <= 5 || count % 30 == 0)
+    {
+        const auto millis = [](auto from, auto to) {
+            return std::chrono::duration<double, std::milli>(to - from).count();
+        };
+        __android_log_print(
+            ANDROID_LOG_INFO,
+            "ReKazumiRIFE",
+            "full-res pair %dx%d prep=%.1fms record=%.1fms gpu=%.1fms copy=%.1fms total=%.1fms",
+            w,
+            h,
+            millis(started, prepared),
+            millis(prepared, recorded),
+            millis(recorded, completed),
+            millis(completed, copied),
+            millis(started, copied));
+    }
 
     return 0;
 }

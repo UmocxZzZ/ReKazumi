@@ -37,6 +37,26 @@ int kazumi_rife_process(
     char *error,
     size_t error_capacity);
 
+int kazumi_rife_process_pair(
+    kazumi_rife_handle handle,
+    const float *src0_r,
+    const float *src0_g,
+    const float *src0_b,
+    const float *src1_r,
+    const float *src1_g,
+    const float *src1_b,
+    float *dst1_r,
+    float *dst1_g,
+    float *dst1_b,
+    float *dst2_r,
+    float *dst2_g,
+    float *dst2_b,
+    int width,
+    int height,
+    ptrdiff_t stride,
+    char *error,
+    size_t error_capacity);
+
 void kazumi_rife_destroy(kazumi_rife_handle handle);
 
 #ifdef __cplusplus

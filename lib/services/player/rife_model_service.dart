@@ -3,7 +3,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
-import 'package:kazumi/request/clients/download_http_client.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -12,9 +12,7 @@ class RifeModelService {
 
   static final RifeModelService instance = RifeModelService._();
 
-  static const String _releaseBase =
-      'https://github.com/UmocxZzZ/ReKazumi/releases/download/'
-      'rife-runtime-v1';
+  static const String _assetBase = 'assets/models/rife-v4.25-lite';
   static const Map<String, String> _modelHashes = {
     'flownet.param':
         'f750ec6723f05a800c8fb07ac0bf3537e741b6ff7fe61b3894e407bd10373a63',
@@ -40,7 +38,7 @@ class RifeModelService {
 
   Future<String> _ensureModel() async {
     if (!isSupported) {
-      throw UnsupportedError('RIFE 3× 当前仅支持 Android arm64 设备');
+      throw UnsupportedError('RIFE 3x 当前仅支持 Android arm64 设备');
     }
 
     final supportDirectory = await getApplicationSupportDirectory();
@@ -55,19 +53,36 @@ class RifeModelService {
 
       final partial = File('${destination.path}.part');
       if (await partial.exists()) await partial.delete();
-      await DownloadHttpClient.instance.download(
-        '$_releaseBase/${entry.key}',
-        partial.path,
-      );
-      if (!await _hasExpectedHash(partial, entry.value)) {
-        await partial.delete();
-        throw StateError('${entry.key} 完整性校验失败');
-      }
+
+      await _copyBundledModel(entry.key, partial, entry.value);
       if (await destination.exists()) await destination.delete();
       await partial.rename(destination.path);
     }
 
     return modelDirectory.path;
+  }
+
+  Future<void> _copyBundledModel(
+    String name,
+    File destination,
+    String expectedHash,
+  ) async {
+    final ByteData data;
+    try {
+      data = await rootBundle.load('$_assetBase/$name');
+    } on FlutterError catch (error) {
+      throw StateError('内置 RIFE 模型缺失：$name ($error)');
+    }
+
+    final bytes = data.buffer.asUint8List(
+      data.offsetInBytes,
+      data.lengthInBytes,
+    );
+    await destination.writeAsBytes(bytes, flush: true);
+    if (!await _hasExpectedHash(destination, expectedHash)) {
+      await destination.delete();
+      throw StateError('内置 RIFE 模型完整性校验失败：$name');
+    }
   }
 
   Future<bool> _hasExpectedHash(File file, String expected) async {

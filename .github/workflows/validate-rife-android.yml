@@ -47,6 +47,11 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Verify bundled RIFE model
+        run: |
+          echo 'f750ec6723f05a800c8fb07ac0bf3537e741b6ff7fe61b3894e407bd10373a63  assets/models/rife-v4.25-lite/flownet.param' | sha256sum --check
+          echo '350a15e464bea5ad378e06c0fb43996e90a0d35653d5a6ef6bc980d832538fb7  assets/models/rife-v4.25-lite/flownet.bin' | sha256sum --check
+
       - name: Check changed Dart formatting
         run: |
           dart format --output=none --set-exit-if-changed \
@@ -79,6 +84,8 @@ jobs:
           grep -q 'lib/arm64-v8a/libmpv.so' /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libmediakitandroidhelper.so' /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libkazumi_rife.so' /tmp/apk-contents.txt
+          grep -q 'flutter_assets/assets/models/rife-v4.25-lite/flownet.param' /tmp/apk-contents.txt
+          grep -q 'flutter_assets/assets/models/rife-v4.25-lite/flownet.bin' /tmp/apk-contents.txt
           METADATA_PATH="$(find build/app/outputs -name output-metadata.json -print -quit)"
           test -n "$METADATA_PATH"
           python - "$METADATA_PATH" <<'PY'
