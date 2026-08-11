@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish/update the rife-libmpv-v1 release asset
+        description: Publish/update the native libmpv release asset
         required: false
         type: boolean
         default: false
@@ -93,15 +93,6 @@ jobs:
             /tmp/kazumi-rife/libkazumi_rife.so
           if-no-files-found: error
 
-      - name: Prepare pinned RIFE 4.25-lite model
-        if: inputs.publish_release == true
-        run: |
-          mkdir -p /tmp/rife-v4.25-lite
-          wget -O /tmp/rife-v4.25-lite/flownet.param https://raw.githubusercontent.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan/master/models/rife-v4.25-lite_ensembleFalse/flownet.param
-          wget -O /tmp/rife-v4.25-lite/flownet.bin https://raw.githubusercontent.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan/master/models/rife-v4.25-lite_ensembleFalse/flownet.bin
-          echo "f750ec6723f05a800c8fb07ac0bf3537e741b6ff7fe61b3894e407bd10373a63  /tmp/rife-v4.25-lite/flownet.param" | sha256sum -c -
-          echo "350a15e464bea5ad378e06c0fb43996e90a0d35653d5a6ef6bc980d832538fb7  /tmp/rife-v4.25-lite/flownet.bin" | sha256sum -c -
-
       - name: Publish native runtime release
         if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2
@@ -112,5 +103,3 @@ jobs:
           prerelease: true
           files: |
             /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
-            /tmp/rife-v4.25-lite/flownet.param
-            /tmp/rife-v4.25-lite/flownet.bin
