@@ -1,6 +1,6 @@
 name: media_kit_libs_android_video
-description: ReKazumi Android media-kit runtime with fixed 3x RIFE-NCNN support.
-version: 1.3.6+rekazumi.1
+description: ReKazumi Android media-kit runtime with fixed 3x Adreno AFME support.
+version: 1.3.6+rekazumi.2
 publish_to: none
 
 environment:
