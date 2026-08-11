@@ -24,7 +24,8 @@ class RifeModelService {
 
   Future<String>? _preparing;
 
-  bool get isSupported => Platform.isAndroid && Abi.current() == Abi.androidArm64;
+  bool get isSupported =>
+      Platform.isAndroid && Abi.current() == Abi.androidArm64;
 
   Future<String> ensureModel() {
     final active = _preparing;

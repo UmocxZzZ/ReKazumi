@@ -93,8 +93,7 @@ abstract class _PlayerPlaybackController with Store {
   @observable
   SuperResolutionMode superResolutionMode = SuperResolutionMode.off;
 
-  FrameInterpolationMode frameInterpolationMode =
-      FrameInterpolationMode.off;
+  FrameInterpolationMode frameInterpolationMode = FrameInterpolationMode.off;
 
   @observable
   double volume = -1;
