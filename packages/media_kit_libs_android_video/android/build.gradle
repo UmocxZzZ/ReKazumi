@@ -40,9 +40,10 @@ android {
         minSdkVersion 16
     }
 
-    dependencies {
-        implementation fileTree(dir: "$buildDir/output", include: '*.jar')
-    }
+}
+
+dependencies {
+    implementation fileTree(dir: "$buildDir/output", include: '*.jar')
 }
 
 task downloadDependencies {
@@ -106,4 +107,7 @@ String sha256(File file) {
         .toString()
 }
 
-assemble.dependsOn(downloadDependencies)
+// The host application's assemble task does not invoke this library's assemble
+// task. Hook dependency preparation into preBuild so the native libmpv JAR is
+// present before AGP resolves and merges JNI libraries into the APK.
+preBuild.dependsOn(downloadDependencies)

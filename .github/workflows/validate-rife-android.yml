@@ -73,6 +73,13 @@ jobs:
           --dart-define=KAZUMI_APPID=
           --dart-define=KAZUMI_KEY=
 
+      - name: Verify native playback libraries are packaged
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk > /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/libmpv.so' /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/libmediakitandroidhelper.so' /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/libkazumi_rife.so' /tmp/apk-contents.txt
+
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
