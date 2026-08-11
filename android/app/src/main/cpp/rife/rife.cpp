@@ -226,19 +226,37 @@ int RIFE::load(const std::string& modeldir)
                 ncnn::MutexLockGuard guard(lock);
                 if (spirv.empty())
                 {
-                    compile_spirv_module(
+                    const int compile_result = compile_spirv_module(
                         rife_preproc_normalized_comp_data,
-                        sizeof(rife_preproc_normalized_comp_data),
+                        sizeof(rife_preproc_normalized_comp_data) - 1,
                         opt,
                         spirv);
+                    if (compile_result != 0 || spirv.empty())
+                    {
+                        __android_log_print(
+                            ANDROID_LOG_ERROR,
+                            "ReKazumiRIFE",
+                            "normalized preprocessor shader compilation failed (%d)",
+                            compile_result);
+                        return -1;
+                    }
                 }
             }
 
             std::vector<ncnn::vk_specialization_type> no_specializations;
             rife_preproc_normalized = new ncnn::Pipeline(vkdev);
             rife_preproc_normalized->set_optimal_local_size_xyz(8, 8, 3);
-            rife_preproc_normalized->create(
+            const int pipeline_result = rife_preproc_normalized->create(
                 spirv.data(), spirv.size() * 4, no_specializations);
+            if (pipeline_result != 0)
+            {
+                __android_log_print(
+                    ANDROID_LOG_ERROR,
+                    "ReKazumiRIFE",
+                    "normalized preprocessor pipeline creation failed (%d)",
+                    pipeline_result);
+                return -1;
+            }
         }
 
         {
@@ -248,19 +266,37 @@ int RIFE::load(const std::string& modeldir)
                 ncnn::MutexLockGuard guard(lock);
                 if (spirv.empty())
                 {
-                    compile_spirv_module(
+                    const int compile_result = compile_spirv_module(
                         rife_postproc_normalized_comp_data,
-                        sizeof(rife_postproc_normalized_comp_data),
+                        sizeof(rife_postproc_normalized_comp_data) - 1,
                         opt,
                         spirv);
+                    if (compile_result != 0 || spirv.empty())
+                    {
+                        __android_log_print(
+                            ANDROID_LOG_ERROR,
+                            "ReKazumiRIFE",
+                            "normalized postprocessor shader compilation failed (%d)",
+                            compile_result);
+                        return -1;
+                    }
                 }
             }
 
             std::vector<ncnn::vk_specialization_type> no_specializations;
             rife_postproc_normalized = new ncnn::Pipeline(vkdev);
             rife_postproc_normalized->set_optimal_local_size_xyz(8, 8, 3);
-            rife_postproc_normalized->create(
+            const int pipeline_result = rife_postproc_normalized->create(
                 spirv.data(), spirv.size() * 4, no_specializations);
+            if (pipeline_result != 0)
+            {
+                __android_log_print(
+                    ANDROID_LOG_ERROR,
+                    "ReKazumiRIFE",
+                    "normalized postprocessor pipeline creation failed (%d)",
+                    pipeline_result);
+                return -1;
+            }
         }
     }
 

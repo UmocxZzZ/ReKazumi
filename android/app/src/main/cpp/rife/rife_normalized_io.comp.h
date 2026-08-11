@@ -4,8 +4,7 @@
 // mpv's GBRPF32 frames already contain normalized RGB values. These shaders
 // only pad/crop and convert storage precision; they deliberately avoid the
 // legacy 0..255 round trip used by the command-line RIFE implementation.
-static const char rife_preproc_normalized_comp_data[] = R"(
-#version 450
+static const char rife_preproc_normalized_comp_data[] = R"(#version 450
 
 #if NCNN_fp16_storage
 #extension GL_EXT_shader_16bit_storage: require
@@ -45,8 +44,7 @@ top_blob_data[out_offset] = sfp(bottom_blob_data[in_offset]);
 }
 )";
 
-static const char rife_postproc_normalized_comp_data[] = R"(
-#version 450
+static const char rife_postproc_normalized_comp_data[] = R"(#version 450
 
 #if NCNN_fp16_storage
 #extension GL_EXT_shader_16bit_storage: require
