@@ -55,7 +55,7 @@ task downloadDependencies {
         def filesToDownload = [
             [
                 url: 'https://github.com/UmocxZzZ/ReKazumi/releases/download/rife-runtime-v1/rekazumi-rife-arm64-v8a.jar',
-                sha256: '4ea04f521654ee1372db993baa95ab3d85b8218800a921a4164c65a17715cb44',
+                sha256: '914be72d0a2a80a6e085a3b3c7b427bfc645200fc70e221d16bf1b251c0b6c0e',
                 name: 'rekazumi-rife-arm64-v8a.jar',
             ],
             [
