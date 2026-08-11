@@ -1,5 +1,5 @@
 diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
-index f9649501f..2e22f72b4 100644
+index f9649501f..c9db7d8a2 100644
 --- a/video/out/gpu/video.c
 +++ b/video/out/gpu/video.c
 @@ -43,6 +43,8 @@
@@ -23,7 +23,7 @@ index f9649501f..2e22f72b4 100644
  #define SURFACES_MAX 10
  
  struct cached_file {
-@@ -210,6 +217,11 @@ struct gl_video {
+@@ -210,6 +217,20 @@ struct gl_video {
  
      struct ra_buf *hdr_peak_ssbo;
      struct surface surfaces[SURFACES_MAX];
@@ -32,10 +32,19 @@ index f9649501f..2e22f72b4 100644
 +    PFNGLQCOMFRAMEEXTRAPOLATION afme_extrapolate;
 +    bool afme_announced;
 +    bool afme_failed;
++    uint32_t afme_reported_events;
++    int64_t afme_stats_last_ns;
++    uint64_t afme_stats_phase[3];
++    uint64_t afme_stats_generated_present;
++    uint64_t afme_stats_pair_requests;
++    uint64_t afme_stats_pair_cache_hits;
++    uint64_t afme_stats_pair_generated;
++    uint64_t afme_stats_bypass_invalid;
++    uint64_t afme_stats_bypass_still;
  
      // user pass descriptions and textures
      struct tex_hook *tex_hooks;
-@@ -539,6 +551,7 @@ const struct m_sub_options gl_video_conf = {
+@@ -539,6 +560,7 @@ const struct m_sub_options gl_video_conf = {
          {"background-tile-size", OPT_INT(background_tile_size), M_RANGE(1, 4096)},
          {"interpolation", OPT_BOOL(interpolation)},
          {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
@@ -43,16 +52,24 @@ index f9649501f..2e22f72b4 100644
          {"blend-subtitles", OPT_CHOICE(blend_subs,
              {"no", BLEND_SUBS_NO},
              {"yes", BLEND_SUBS_YES},
-@@ -620,6 +633,8 @@ static void gl_video_reset_surfaces(struct gl_video *p)
+@@ -620,6 +642,16 @@ static void gl_video_reset_surfaces(struct gl_video *p)
      p->surface_now = 0;
      p->frames_drawn = 0;
      p->output_tex_valid = false;
 +    p->afme_source_ids[0] = 0;
 +    p->afme_source_ids[1] = 0;
++    p->afme_stats_last_ns = 0;
++    memset(p->afme_stats_phase, 0, sizeof(p->afme_stats_phase));
++    p->afme_stats_generated_present = 0;
++    p->afme_stats_pair_requests = 0;
++    p->afme_stats_pair_cache_hits = 0;
++    p->afme_stats_pair_generated = 0;
++    p->afme_stats_bypass_invalid = 0;
++    p->afme_stats_bypass_still = 0;
  }
  
  static void gl_video_reset_hooks(struct gl_video *p)
-@@ -673,6 +688,9 @@ static void uninit_rendering(struct gl_video *p)
+@@ -673,6 +705,9 @@ static void uninit_rendering(struct gl_video *p)
      for (int n = 0; n < SURFACES_MAX; n++)
          ra_tex_free(p->ra, &p->surfaces[n].tex);
  
@@ -62,11 +79,31 @@ index f9649501f..2e22f72b4 100644
      for (int n = 0; n < p->num_hook_textures; n++)
          ra_tex_free(p->ra, &p->hook_textures[n]);
  
-@@ -3267,6 +3285,113 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
+@@ -3267,6 +3302,215 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
      return true;
  }
  
-+static bool afme_format_supported(struct gl_video *p, struct ra_tex *tex)
++enum {
++    AFME_EVENT_INPUT = 1 << 0,
++    AFME_EVENT_NO_FUNCTION = 1 << 1,
++    AFME_EVENT_DISABLED_AFTER_GL_ERROR = 1 << 2,
++    AFME_EVENT_UNSUPPORTED_FORMAT = 1 << 3,
++    AFME_EVENT_SOURCE_MISMATCH = 1 << 4,
++    AFME_EVENT_OUTPUT_ALLOC = 1 << 5,
++    AFME_EVENT_RAW_TEXTURE = 1 << 6,
++};
++
++static void afme_report_event(struct gl_video *p, uint32_t event,
++                              const char *message)
++{
++    if (p->afme_reported_events & event)
++        return;
++    p->afme_reported_events |= event;
++    MP_WARN(p, "Adreno AFME debug: %s\n", message);
++}
++
++static bool afme_format_supported(struct gl_video *p, struct ra_tex *tex,
++                                  GLint *out_internal_format)
 +{
 +    if (!ra_is_gl(p->ra) || !tex || tex->params.dimensions != 2)
 +        return false;
@@ -75,6 +112,8 @@ index f9649501f..2e22f72b4 100644
 +    GLenum format = 0;
 +    GLenum type = 0;
 +    ra_gl_get_format(tex->params.format, &internal_format, &format, &type);
++    if (out_internal_format)
++        *out_internal_format = internal_format;
 +    (void)format;
 +    (void)type;
 +
@@ -90,6 +129,46 @@ index f9649501f..2e22f72b4 100644
 +    default:
 +        return false;
 +    }
++}
++
++static void afme_report_stats(struct gl_video *p)
++{
++    int64_t now_ns = mp_time_ns();
++    if (!p->afme_stats_last_ns) {
++        p->afme_stats_last_ns = now_ns;
++        return;
++    }
++
++    int64_t elapsed_ns = now_ns - p->afme_stats_last_ns;
++    if (elapsed_ns < MP_TIME_S_TO_NS(1))
++        return;
++
++    uint64_t presented = p->afme_stats_phase[0] +
++                         p->afme_stats_phase[1] +
++                         p->afme_stats_phase[2];
++    double elapsed = MP_TIME_NS_TO_S(elapsed_ns);
++    MP_INFO(p, "Adreno AFME debug: present=%.1f fps phases=%llu/%llu/%llu "
++            "generated-present=%llu pair-requests=%llu cache-hits=%llu "
++            "generated-pairs=%llu bypass-invalid=%llu bypass-still=%llu\n",
++            presented / elapsed,
++            (unsigned long long)p->afme_stats_phase[0],
++            (unsigned long long)p->afme_stats_phase[1],
++            (unsigned long long)p->afme_stats_phase[2],
++            (unsigned long long)p->afme_stats_generated_present,
++            (unsigned long long)p->afme_stats_pair_requests,
++            (unsigned long long)p->afme_stats_pair_cache_hits,
++            (unsigned long long)p->afme_stats_pair_generated,
++            (unsigned long long)p->afme_stats_bypass_invalid,
++            (unsigned long long)p->afme_stats_bypass_still);
++
++    p->afme_stats_last_ns = now_ns;
++    memset(p->afme_stats_phase, 0, sizeof(p->afme_stats_phase));
++    p->afme_stats_generated_present = 0;
++    p->afme_stats_pair_requests = 0;
++    p->afme_stats_pair_cache_hits = 0;
++    p->afme_stats_pair_generated = 0;
++    p->afme_stats_bypass_invalid = 0;
++    p->afme_stats_bypass_still = 0;
 +}
 +
 +static bool afme_resize_output(struct gl_video *p, int index,
@@ -113,21 +192,56 @@ index f9649501f..2e22f72b4 100644
 +static bool afme_generate_pair(struct gl_video *p, struct surface *first,
 +                               struct surface *second)
 +{
-+    if (!p->afme_extrapolate || p->afme_failed ||
-+        !afme_format_supported(p, first->tex) ||
-+        first->tex->params.w != second->tex->params.w ||
++    p->afme_stats_pair_requests++;
++    if (!p->afme_extrapolate) {
++        afme_report_event(p, AFME_EVENT_NO_FUNCTION,
++                          "glExtrapolateTex2DQCOM is unavailable");
++        return false;
++    }
++    if (p->afme_failed) {
++        afme_report_event(p, AFME_EVENT_DISABLED_AFTER_GL_ERROR,
++                          "backend was disabled after an OpenGL error");
++        return false;
++    }
++
++    GLint first_internal_format = 0;
++    if (!afme_format_supported(p, first->tex, &first_internal_format)) {
++        if (!(p->afme_reported_events & AFME_EVENT_UNSUPPORTED_FORMAT)) {
++            p->afme_reported_events |= AFME_EVENT_UNSUPPORTED_FORMAT;
++            MP_WARN(p, "Adreno AFME debug: unsupported source texture format "
++                    "0x%x\n", first_internal_format);
++        }
++        return false;
++    }
++    if (first->tex->params.w != second->tex->params.w ||
 +        first->tex->params.h != second->tex->params.h ||
 +        first->tex->params.format != second->tex->params.format)
++    {
++        afme_report_event(p, AFME_EVENT_SOURCE_MISMATCH,
++                          "source textures do not have matching dimensions and format");
 +        return false;
++    }
++
++    if (!(p->afme_reported_events & AFME_EVENT_INPUT)) {
++        p->afme_reported_events |= AFME_EVENT_INPUT;
++        MP_INFO(p, "Adreno AFME debug: input=%dx%d internal-format=0x%x\n",
++                first->tex->params.w, first->tex->params.h,
++                first_internal_format);
++    }
 +
 +    if (p->afme_source_ids[0] == first->id &&
 +        p->afme_source_ids[1] == second->id &&
-+        p->afme_tex[0] && p->afme_tex[1])
++        p->afme_tex[0] && p->afme_tex[1]) {
++        p->afme_stats_pair_cache_hits++;
 +        return true;
++    }
 +
 +    if (!afme_resize_output(p, 0, first->tex) ||
-+        !afme_resize_output(p, 1, first->tex))
++        !afme_resize_output(p, 1, first->tex)) {
++        afme_report_event(p, AFME_EVENT_OUTPUT_ALLOC,
++                          "failed to allocate output textures");
 +        return false;
++    }
 +
 +    GLuint source_texture[2] = {0};
 +    GLuint output_texture[2] = {0};
@@ -144,7 +258,11 @@ index f9649501f..2e22f72b4 100644
 +        source_target[1] != GL_TEXTURE_2D ||
 +        output_target[0] != GL_TEXTURE_2D ||
 +        output_target[1] != GL_TEXTURE_2D)
++    {
++        afme_report_event(p, AFME_EVENT_RAW_TEXTURE,
++                          "renderer textures are not usable GL_TEXTURE_2D objects");
 +        return false;
++    }
 +
 +    GL *gl = ra_gl_get(p->ra);
 +    while (gl->GetError() != GL_NO_ERROR) {}
@@ -166,6 +284,7 @@ index f9649501f..2e22f72b4 100644
 +
 +    p->afme_source_ids[0] = first->id;
 +    p->afme_source_ids[1] = second->id;
++    p->afme_stats_pair_generated++;
 +    if (!p->afme_announced) {
 +        MP_INFO(p, "Adreno AFME fixed 3x frame generation is active.\n");
 +        p->afme_announced = true;
@@ -176,7 +295,19 @@ index f9649501f..2e22f72b4 100644
  // Draws an interpolate frame to fbo, based on the frame timing in t
  // flags: bit set of RENDER_FRAME_* flags
  static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-@@ -3379,6 +3504,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3374,11 +3618,19 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+         pass_info_reset(p, true);
+     pass_describe(p, "interpolation");
+     if (!valid || t->still) {
++        if (p->opts.adreno_frame_generation) {
++            if (!valid)
++                p->afme_stats_bypass_invalid++;
++            if (t->still)
++                p->afme_stats_bypass_still++;
++            afme_report_stats(p);
++        }
+         // surface_now is guaranteed to be valid, so we can safely use it.
+         pass_read_tex(p, p->surfaces[surface_now].tex);
          p->is_interpolated = false;
      } else {
          double mix = t->vsync_offset / t->ideal_frame_duration;
@@ -184,7 +315,7 @@ index f9649501f..2e22f72b4 100644
          // The scaler code always wants the fcoord to be between 0 and 1,
          // so we try to adjust by using the previous set of N frames instead
          // (which requires some extra checking to make sure it's valid)
-@@ -3389,13 +3515,32 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3389,13 +3641,37 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
              {
                  mix += 1.0;
                  surface_bse = prev;
@@ -206,6 +337,11 @@ index f9649501f..2e22f72b4 100644
 +            if (phase > 0 && afme_generate_pair(p, first, second))
 +                selected = p->afme_tex[phase - 1];
 +
++            p->afme_stats_phase[phase]++;
++            if (selected != first->tex)
++                p->afme_stats_generated_present++;
++            afme_report_stats(p);
++
 +            // Present only the fixed source/1/3/2/3 phases. A 120 Hz display
 +            // holds these textures according to source PTS; it does not cause
 +            // additional generated phases.
@@ -218,7 +354,7 @@ index f9649501f..2e22f72b4 100644
              // Oversample uses the frame area as mix ratio, not the vsync
              // position itself
              double vsync_dist = t->vsync_interval / t->ideal_frame_duration,
-@@ -3408,20 +3553,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3408,20 +3684,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          }
  
          // Blend the frames together
@@ -242,7 +378,7 @@ index f9649501f..2e22f72b4 100644
              struct image img =
                  image_wrap(p->surfaces[surface_wrap(surface_bse+i)].tex,
                             PLANE_RGB, p->components);
-@@ -3434,7 +3579,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3434,7 +3710,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
  
          MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
                   t->ideal_frame_duration, t->vsync_interval, mix);
@@ -252,7 +388,7 @@ index f9649501f..2e22f72b4 100644
      }
      pass_draw_to_screen(p, fbo, flags);
  
-@@ -4211,6 +4357,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+@@ -4211,6 +4488,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
          .video_eq = mp_csp_equalizer_create(p, g),
          .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
      };
