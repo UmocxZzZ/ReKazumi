@@ -1,19 +1,13 @@
 diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
-index f9649501f..c9db7d8a2 100644
+index f9649501f..2a41d8cfe 100644
 --- a/video/out/gpu/video.c
 +++ b/video/out/gpu/video.c
-@@ -43,6 +43,8 @@
- #include "video/out/aspect.h"
- #include "video/out/dither.h"
+@@ -45,2 +45,4 @@
  #include "video/out/vo.h"
 +#include "video/out/opengl/ra_gl.h"
 +#include "video/out/opengl/utils.h"
  
- // must be sorted, and terminated with 0
- int filter_sizes[] =
-@@ -122,6 +124,11 @@ struct surface {
-     double pts;
- };
+@@ -124,2 +126,7 @@ struct surface {
  
 +typedef void (GLAPIENTRY *PFNGLQCOMFRAMEEXTRAPOLATION)(GLuint src1,
 +                                                       GLuint src2,
@@ -21,11 +15,7 @@ index f9649501f..c9db7d8a2 100644
 +                                                       GLfloat scale_factor);
 +
  #define SURFACES_MAX 10
- 
- struct cached_file {
-@@ -210,6 +217,20 @@ struct gl_video {
- 
-     struct ra_buf *hdr_peak_ssbo;
+@@ -212,2 +219,17 @@ struct gl_video {
      struct surface surfaces[SURFACES_MAX];
 +    struct ra_tex *afme_tex[2];
 +    uint64_t afme_source_ids[2];
@@ -33,6 +23,7 @@ index f9649501f..c9db7d8a2 100644
 +    bool afme_announced;
 +    bool afme_failed;
 +    uint32_t afme_reported_events;
++    int64_t afme_gate_last_ns;
 +    int64_t afme_stats_last_ns;
 +    uint64_t afme_stats_phase[3];
 +    uint64_t afme_stats_generated_present;
@@ -42,22 +33,15 @@ index f9649501f..c9db7d8a2 100644
 +    uint64_t afme_stats_bypass_invalid;
 +    uint64_t afme_stats_bypass_still;
  
-     // user pass descriptions and textures
-     struct tex_hook *tex_hooks;
-@@ -539,6 +560,7 @@ const struct m_sub_options gl_video_conf = {
-         {"background-tile-size", OPT_INT(background_tile_size), M_RANGE(1, 4096)},
-         {"interpolation", OPT_BOOL(interpolation)},
+@@ -541,2 +563,3 @@ const struct m_sub_options gl_video_conf = {
          {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
 +        {"adreno-frame-generation", OPT_BOOL(adreno_frame_generation)},
          {"blend-subtitles", OPT_CHOICE(blend_subs,
-             {"no", BLEND_SUBS_NO},
-             {"yes", BLEND_SUBS_YES},
-@@ -620,6 +642,16 @@ static void gl_video_reset_surfaces(struct gl_video *p)
-     p->surface_now = 0;
-     p->frames_drawn = 0;
+@@ -622,2 +645,13 @@ static void gl_video_reset_surfaces(struct gl_video *p)
      p->output_tex_valid = false;
 +    p->afme_source_ids[0] = 0;
 +    p->afme_source_ids[1] = 0;
++    p->afme_gate_last_ns = 0;
 +    p->afme_stats_last_ns = 0;
 +    memset(p->afme_stats_phase, 0, sizeof(p->afme_stats_phase));
 +    p->afme_stats_generated_present = 0;
@@ -67,21 +51,13 @@ index f9649501f..c9db7d8a2 100644
 +    p->afme_stats_bypass_invalid = 0;
 +    p->afme_stats_bypass_still = 0;
  }
- 
- static void gl_video_reset_hooks(struct gl_video *p)
-@@ -673,6 +705,9 @@ static void uninit_rendering(struct gl_video *p)
-     for (int n = 0; n < SURFACES_MAX; n++)
-         ra_tex_free(p->ra, &p->surfaces[n].tex);
+@@ -675,2 +709,5 @@ static void uninit_rendering(struct gl_video *p)
  
 +    for (int n = 0; n < 2; n++)
 +        ra_tex_free(p->ra, &p->afme_tex[n]);
 +
      for (int n = 0; n < p->num_hook_textures; n++)
-         ra_tex_free(p->ra, &p->hook_textures[n]);
- 
-@@ -3267,6 +3302,215 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
-     return true;
- }
+@@ -3269,2 +3306,211 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
  
 +enum {
 +    AFME_EVENT_INPUT = 1 << 0,
@@ -293,11 +269,7 @@ index f9649501f..c9db7d8a2 100644
 +}
 +
  // Draws an interpolate frame to fbo, based on the frame timing in t
- // flags: bit set of RENDER_FRAME_* flags
- static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-@@ -3374,11 +3618,19 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-         pass_info_reset(p, true);
-     pass_describe(p, "interpolation");
+@@ -3376,2 +3622,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
      if (!valid || t->still) {
 +        if (p->opts.adreno_frame_generation) {
 +            if (!valid)
@@ -307,24 +279,15 @@ index f9649501f..c9db7d8a2 100644
 +            afme_report_stats(p);
 +        }
          // surface_now is guaranteed to be valid, so we can safely use it.
-         pass_read_tex(p, p->surfaces[surface_now].tex);
-         p->is_interpolated = false;
-     } else {
+@@ -3381,2 +3634,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          double mix = t->vsync_offset / t->ideal_frame_duration;
 +        int afme_first = surface_now;
          // The scaler code always wants the fcoord to be between 0 and 1,
-         // so we try to adjust by using the previous set of N frames instead
-         // (which requires some extra checking to make sure it's valid)
-@@ -3389,13 +3641,37 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-             {
-                 mix += 1.0;
+@@ -3391,2 +3645,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
                  surface_bse = prev;
 +                afme_first = prev;
              } else {
-                 mix = 0.0; // at least don't blow up, this should only
-                            // ever happen at the start of playback
-             }
-         }
+@@ -3397,3 +3652,26 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
  
 -        if (oversample) {
 +        bool used_afme = false;
@@ -352,45 +315,46 @@ index f9649501f..c9db7d8a2 100644
 +
 +        if (!used_afme && oversample) {
              // Oversample uses the frame area as mix ratio, not the vsync
-             // position itself
-             double vsync_dist = t->vsync_interval / t->ideal_frame_duration,
-@@ -3408,20 +3684,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-         }
- 
+@@ -3410,3 +3688,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          // Blend the frames together
 -        if (oversample || linear) {
 +        if (!used_afme && (oversample || linear)) {
              gl_sc_uniform_dynamic(p->sc);
-             gl_sc_uniform_f(p->sc, "inter_coeff", mix);
-             GLSL(color = mix(texture(texture0, texcoord0),
-                              texture(texture1, texcoord1),
+@@ -3416,3 +3694,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
                               inter_coeff);)
 -        } else {
 +        } else if (!used_afme) {
              gl_sc_uniform_dynamic(p->sc);
-             gl_sc_uniform_f(p->sc, "fcoord", mix);
-             pass_sample_separated_gen(p->sc, tscale, 0, 0);
-         }
- 
+@@ -3423,3 +3701,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          // Load all the required frames
 -        for (int i = 0; i < size; i++) {
 +        for (int i = 0; !used_afme && i < size; i++) {
              struct image img =
-                 image_wrap(p->surfaces[surface_wrap(surface_bse+i)].tex,
-                            PLANE_RGB, p->components);
-@@ -3434,7 +3710,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
- 
-         MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
+@@ -3436,3 +3714,4 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
                   t->ideal_frame_duration, t->vsync_interval, mix);
 -        p->is_interpolated = true;
 +        if (!used_afme)
 +            p->is_interpolated = true;
      }
-     pass_draw_to_screen(p, fbo, flags);
+@@ -3487,2 +3766,17 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
  
-@@ -4211,6 +4488,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
-         .video_eq = mp_csp_equalizer_create(p, g),
-         .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
++        int64_t afme_gate_now_ns = mp_time_ns();
++        if (!p->afme_gate_last_ns ||
++            afme_gate_now_ns - p->afme_gate_last_ns >= MP_TIME_S_TO_NS(1))
++        {
++            MP_INFO(p, "Adreno AFME gate: option=%d interpolation=%d "
++                    "display-synced=%d interpolate=%d still=%d drawn=%d "
++                    "ideal-ms=%.3f vsync-ms=%.3f\n",
++                    p->opts.adreno_frame_generation, p->opts.interpolation,
++                    frame->display_synced, interpolate, frame->still,
++                    p->frames_drawn,
++                    frame->ideal_frame_duration * 1000.0,
++                    frame->vsync_interval * 1000.0);
++            p->afme_gate_last_ns = afme_gate_now_ns;
++        }
++
+         if (interpolate) {
+@@ -4213,2 +4507,15 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
      };
 +
 +    if (ra_is_gl(ra)) {
@@ -406,17 +370,11 @@ index f9649501f..c9db7d8a2 100644
 +        }
 +    }
      // make sure this variable is initialized to *something*
-     p->pass = p->pass_fresh;
-     struct gl_video_opts *opts = p->opts_cache->opts;
 diff --git a/video/out/gpu/video.h b/video/out/gpu/video.h
 index 4f80f559f..1b09738d4 100644
 --- a/video/out/gpu/video.h
 +++ b/video/out/gpu/video.h
-@@ -166,6 +166,7 @@ struct gl_video_opts {
-     int background_tile_size;
-     bool interpolation;
+@@ -168,2 +168,3 @@ struct gl_video_opts {
      float interpolation_threshold;
 +    bool adreno_frame_generation;
      int blend_subs;
-     char **user_shaders;
-     char **user_shader_opts;
