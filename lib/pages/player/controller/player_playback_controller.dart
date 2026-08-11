@@ -6,7 +6,9 @@ import 'dart:typed_data';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/controller/player_debug_controller.dart';
+import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
+import 'package:kazumi/services/player/rife_model_service.dart';
 import 'package:kazumi/services/shaders/shader_asset_service.dart';
 import 'package:kazumi/utils/constants.dart';
 import 'package:kazumi/services/logging/logger.dart';
@@ -90,6 +92,9 @@ abstract class _PlayerPlaybackController with Store {
   /// 当前超分辨率模式
   @observable
   SuperResolutionMode superResolutionMode = SuperResolutionMode.off;
+
+  FrameInterpolationMode frameInterpolationMode =
+      FrameInterpolationMode.off;
 
   @observable
   double volume = -1;
@@ -239,6 +244,9 @@ abstract class _PlayerPlaybackController with Store {
     superResolutionMode = SuperResolutionMode.fromStorageValue(
       GStorage.getSetting(SettingsKeys.defaultSuperResolutionMode),
     );
+    frameInterpolationMode = FrameInterpolationMode.fromStorageValue(
+      GStorage.getSetting(SettingsKeys.defaultFrameInterpolationMode),
+    );
     hAenable = GStorage.getSetting(SettingsKeys.hAenable);
     androidEnableOpenSLES =
         GStorage.getSetting(SettingsKeys.androidEnableOpenSLES);
@@ -366,6 +374,11 @@ abstract class _PlayerPlaybackController with Store {
         hAenable = true;
         hardwareDecoder = 'mediacodec';
         superResolutionMode = SuperResolutionMode.off;
+        frameInterpolationMode = FrameInterpolationMode.off;
+      }
+
+      if (!RifeModelService.instance.isSupported) {
+        frameInterpolationMode = FrameInterpolationMode.off;
       }
 
       videoController ??= VideoController(
@@ -381,6 +394,13 @@ abstract class _PlayerPlaybackController with Store {
       player.setPlaylistMode(PlaylistMode.none);
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
+      }
+
+      if (frameInterpolationMode.enabled) {
+        await setFrameInterpolation(frameInterpolationMode, player: player);
+        if (!isCurrentPlayer(player)) {
+          return await _discardIfNotCurrent(candidate);
+        }
       }
 
       bool showPlayerError = GStorage.getSetting(SettingsKeys.showPlayerError);
@@ -475,6 +495,51 @@ abstract class _PlayerPlaybackController with Store {
       superResolutionMode = mode;
     } catch (e) {
       KazumiLogger().w('PlayerController: failed to set shader', error: e);
+    }
+  }
+
+  Future<bool> setFrameInterpolation(
+    FrameInterpolationMode mode, {
+    Player? player,
+  }) async {
+    final currentPlayer = player ?? mediaPlayer;
+    if (currentPlayer == null) return false;
+
+    try {
+      final pp = currentPlayer.platform as NativePlayer;
+      await pp.waitForPlayerInitialization;
+      await pp.waitForVideoControllerInitializationIfAttached;
+      if (!identical(mediaPlayer, currentPlayer)) return false;
+
+      if (!mode.enabled) {
+        await pp.command(['vf', 'remove', '@rekazumi-rife']);
+        frameInterpolationMode = FrameInterpolationMode.off;
+        return true;
+      }
+
+      final modelPath = await RifeModelService.instance.ensureModel();
+      if (!identical(mediaPlayer, currentPlayer)) return false;
+
+      // Keep source/audio PTS as the master clock. The 120 Hz compositor may
+      // hold frames, but mpv must not synthesize another temporal layer.
+      await pp.setProperty('interpolation', 'no');
+      await pp.command([
+        'vf',
+        'add',
+        '@rekazumi-rife:rife-ncnn=model-path=$modelPath:'
+            'gpu-id=-1:duplicate-threshold=0.0015:'
+            'scene-threshold=0.22:sample-step=16',
+      ]);
+      frameInterpolationMode = mode;
+      return true;
+    } catch (error, stackTrace) {
+      frameInterpolationMode = FrameInterpolationMode.off;
+      KazumiLogger().e(
+        'PlayerController: failed to enable fixed 3x RIFE interpolation',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
     }
   }
 

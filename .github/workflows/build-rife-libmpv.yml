@@ -32,7 +32,7 @@ jobs:
         run: |
           echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/bookworm-backports.list
           apt-get update
-          apt-get install -y sudo git gcc-multilib libc-dev make automake pkg-config libtool nasm python3-jsonschema wget python3-jinja2 zip unzip python3-pip ca-certificates
+          apt-get install -y sudo git gcc-multilib libc-dev make automake pkg-config libtool nasm python3-jsonschema wget python3-jinja2 zip unzip python3-pip ca-certificates cmake ninja-build
           apt-get install -y -t bookworm-backports meson
 
       - name: Set up JDK 17
@@ -71,18 +71,42 @@ jobs:
       - name: Build arm64 libmpv with RIFE filter
         run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
 
+      - name: Build arm64 RIFE Vulkan bridge
+        run: |
+          cmake -S android/app/src/main/cpp -B /tmp/kazumi-rife -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/kazumi-rife --parallel
+
       - name: Upload libmpv artifact
         uses: actions/upload-artifact@v4
         with:
           name: rekazumi-rife-libmpv-arm64
-          path: /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
+          path: |
+            /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
+            /tmp/kazumi-rife/libkazumi_rife.so
           if-no-files-found: error
+
+      - name: Prepare pinned RIFE 4.25-lite model
+        if: inputs.publish_release == true
+        run: |
+          mkdir -p /tmp/rife-v4.25-lite
+          wget -O /tmp/rife-v4.25-lite/flownet.param https://raw.githubusercontent.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan/master/models/rife-v4.25-lite_ensembleFalse/flownet.param
+          wget -O /tmp/rife-v4.25-lite/flownet.bin https://raw.githubusercontent.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan/master/models/rife-v4.25-lite_ensembleFalse/flownet.bin
+          echo "f750ec6723f05a800c8fb07ac0bf3537e741b6ff7fe61b3894e407bd10373a63  /tmp/rife-v4.25-lite/flownet.param" | sha256sum -c -
+          echo "350a15e464bea5ad378e06c0fb43996e90a0d35653d5a6ef6bc980d832538fb7  /tmp/rife-v4.25-lite/flownet.bin" | sha256sum -c -
 
       - name: Publish native runtime release
         if: inputs.publish_release == true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rife-libmpv-v1
-          name: ReKazumi RIFE libmpv v1
+          tag_name: rife-runtime-v1
+          name: ReKazumi RIFE runtime v1
           prerelease: true
-          files: /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
+          files: |
+            /tmp/libmpv-build/buildscripts/rekazumi-rife-arm64-v8a.jar
+            /tmp/rife-v4.25-lite/flownet.param
+            /tmp/rife-v4.25-lite/flownet.bin
