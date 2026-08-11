@@ -526,7 +526,7 @@ abstract class _PlayerPlaybackController with Store {
         'vf',
         'add',
         '@rekazumi-rife:rife-ncnn=model-path=$modelPath:'
-            'gpu-id=-1:duplicate-threshold=0.0015:'
+            'gpu-id=-1:duplicate-threshold=0.004:'
             'scene-threshold=0.22:sample-step=16',
       ]);
       frameInterpolationMode = mode;

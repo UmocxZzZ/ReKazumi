@@ -1260,7 +1260,9 @@ int RIFE::process_v4(const float* src0R, const float* src0G, const float* src0B,
             cmd.record_pipeline(rife_preproc, bindings, constants, in1_gpu_padded);
         }
         {
-            timestep_gpu_padded.create(w_padded, h_padded, 1, in_out_tile_elemsize, 1, blob_vkallocator);
+            const int timestep_width = uhd_mode ? w_padded / 2 : w_padded;
+            const int timestep_height = uhd_mode ? h_padded / 2 : h_padded;
+            timestep_gpu_padded.create(timestep_width, timestep_height, 1, in_out_tile_elemsize, 1, blob_vkallocator);
 
             std::vector<ncnn::VkMat> bindings(1);
             bindings[0] = timestep_gpu_padded;
@@ -1282,10 +1284,29 @@ int RIFE::process_v4(const float* src0R, const float* src0G, const float* src0B,
             ex.set_workspace_vkallocator(blob_vkallocator);
             ex.set_staging_vkallocator(staging_vkallocator);
 
-            ex.input("in0", in0_gpu_padded);
-            ex.input("in1", in1_gpu_padded);
-            ex.input("in2", timestep_gpu_padded);
-            ex.extract("out0", out_gpu_padded, cmd);
+            if (uhd_mode)
+            {
+                ncnn::VkMat in0_gpu_padded_downscaled;
+                ncnn::VkMat in1_gpu_padded_downscaled;
+                rife_uhd_downscale_image->forward(in0_gpu_padded, in0_gpu_padded_downscaled, cmd, opt);
+                rife_uhd_downscale_image->forward(in1_gpu_padded, in1_gpu_padded_downscaled, cmd, opt);
+
+                ex.input("in0", in0_gpu_padded_downscaled);
+                ex.input("in1", in1_gpu_padded_downscaled);
+                ex.input("in2", timestep_gpu_padded);
+
+                ncnn::VkMat out_gpu_padded_downscaled;
+                ex.extract("out0", out_gpu_padded_downscaled, cmd);
+                rife_uhd_upscale_flow->forward(
+                    out_gpu_padded_downscaled, out_gpu_padded, cmd, opt);
+            }
+            else
+            {
+                ex.input("in0", in0_gpu_padded);
+                ex.input("in1", in1_gpu_padded);
+                ex.input("in2", timestep_gpu_padded);
+                ex.extract("out0", out_gpu_padded, cmd);
+            }
         }
 
         out_gpu.create(w, h, channels, sizeof(float), 1, blob_vkallocator);

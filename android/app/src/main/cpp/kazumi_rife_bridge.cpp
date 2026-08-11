@@ -86,7 +86,7 @@ extern "C" kazumi_rife_handle kazumi_rife_create(
     auto rife = std::make_unique<RIFE>(
         resolved_gpu_id,
         false,
-        false,
+        true,
         1,
         false,
         true,
