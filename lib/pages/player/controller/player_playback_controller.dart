@@ -8,7 +8,6 @@ import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/controller/player_debug_controller.dart';
 import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
-import 'package:kazumi/services/player/rife_model_service.dart';
 import 'package:kazumi/services/shaders/shader_asset_service.dart';
 import 'package:kazumi/utils/constants.dart';
 import 'package:kazumi/services/logging/logger.dart';
@@ -369,14 +368,18 @@ abstract class _PlayerPlaybackController with Store {
         }
       }
 
+      if (Platform.isAndroid && frameInterpolationMode.enabled) {
+        // AFME is an OpenGL ES driver feature. Keep hardware decoding, but
+        // force mpv's GPU renderer onto the Android EGL context.
+        videoRenderer = 'gpu';
+        await pp.setProperty('gpu-api', 'opengl');
+        await pp.setProperty('gpu-context', 'android');
+      }
+
       if (videoRenderer == 'mediacodec_embed') {
         hAenable = true;
         hardwareDecoder = 'mediacodec';
         superResolutionMode = SuperResolutionMode.off;
-        frameInterpolationMode = FrameInterpolationMode.off;
-      }
-
-      if (!RifeModelService.instance.isSupported) {
         frameInterpolationMode = FrameInterpolationMode.off;
       }
 
@@ -511,30 +514,27 @@ abstract class _PlayerPlaybackController with Store {
       if (!identical(mediaPlayer, currentPlayer)) return false;
 
       if (!mode.enabled) {
-        await pp.command(['vf', 'remove', '@rekazumi-rife']);
+        await pp.setProperty('adreno-frame-generation', 'no');
+        await pp.setProperty('interpolation', 'no');
+        await pp.setProperty('video-sync', 'audio');
         frameInterpolationMode = FrameInterpolationMode.off;
         return true;
       }
 
-      final modelPath = await RifeModelService.instance.ensureModel();
-      if (!identical(mediaPlayer, currentPlayer)) return false;
-
-      // Keep source/audio PTS as the master clock. The 120 Hz compositor may
-      // hold frames, but mpv must not synthesize another temporal layer.
-      await pp.setProperty('interpolation', 'no');
-      await pp.command([
-        'vf',
-        'add',
-        '@rekazumi-rife:rife-ncnn=model-path=$modelPath:'
-            'gpu-id=-1:duplicate-threshold=0.004:'
-            'scene-threshold=0.22:sample-step=16',
-      ]);
+      // display-vdrop preserves source/audio speed (speed factor remains 1.0)
+      // while allowing mpv's presentation queue to run at display cadence.
+      // The renderer quantizes that cadence to source, 1/3 and 2/3 only.
+      await pp.setProperty('video-sync', 'display-vdrop');
+      await pp.setProperty('tscale', 'oversample');
+      await pp.setProperty('interpolation-threshold', '-1');
+      await pp.setProperty('adreno-frame-generation', 'yes');
+      await pp.setProperty('interpolation', 'yes');
       frameInterpolationMode = mode;
       return true;
     } catch (error, stackTrace) {
       frameInterpolationMode = FrameInterpolationMode.off;
       KazumiLogger().e(
-        'PlayerController: failed to enable fixed 3x RIFE interpolation',
+        'PlayerController: failed to enable fixed 3x Adreno AFME frame generation',
         error: error,
         stackTrace: stackTrace,
       );

@@ -10,43 +10,44 @@
 ## Playback requirements
 
 - Keep source timing unchanged. Do not convert 23.976 fps to 24 fps and do not alter playback speed.
-- RIFE output is fixed at 3x: generate only `t=1/3` and `t=2/3` from two original frames.
-- Never recursively interpolate generated frames.
+- Frame generation is fixed at 3x: generate only `t=1/3` and `t=2/3` from two original frames.
+- Use Qualcomm Adreno Frame Motion Engine (`GL_QCOM_frame_extrapolation`) in the mpv OpenGL ES presentation path on supported devices.
+- Never recursively use generated frames as temporal inputs.
 - Keep temporal interpolation independent from the display refresh rate. A 120 Hz display must not cause 5x interpolation.
 - Duplicate frames and scene cuts may bypass inference, but ordinary motion must retain the requested full-quality interpolation.
-- Anime4K is spatial processing and RIFE is temporal processing. Do not silently enable mpv temporal interpolation on top of RIFE.
+- Anime4K is spatial processing and AFME is temporal processing. Do not run mpv's pixel-blending temporal scaler on top of AFME.
 
 ## Quality policy
 
-- Architecture and data movement must be optimized before considering model or resolution reductions.
-- Full-resolution RIFE is the default required path.
-- Do not enable RIFE UHD/half-resolution mode as a performance shortcut.
+- Architecture and data movement must be optimized before considering resolution reductions.
+- AFME consumes and produces GPU-resident OpenGL textures; do not add CPU readback or ncnn inference to the active path.
 - Do not lower interpolation quality, output resolution, color precision, or interpolation coverage without explicit user approval.
 - Performance fixes must be measured instead of inferred from CPU frequency alone.
 
-## RIFE architecture
+## Frame-generation architecture
 
-- Prefer one frame-pair call that produces both 3x intermediate frames.
-- Reuse source packing, GPU upload, padding, preprocessing, allocators, and command submission where safe.
-- Preserve original frames as the only model inputs.
-- Avoid unnecessary CPU-to-GPU and GPU-to-CPU round trips.
-- Keep timing logs for preparation, command recording, GPU execution, output copy, and total pair latency during optimization.
+- Use the two original mpv GPU render surfaces as AFME inputs.
+- Generate both 3x intermediate textures once per original frame pair with scale factors `-2/3` and `-1/3`.
+- Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
+- Preserve original frames as the only temporal inputs.
+- Keep `video-sync=display-vdrop`: this enables the presentation queue while mpv keeps the video speed factor at 1.0 and follows the audio/source timeline.
+- Force the AFME backend to `vo=gpu`, `gpu-api=opengl`, and `gpu-context=android`; `gpu-next` is Vulkan and cannot call the GLES extension.
+- If the extension or compatible texture format is unavailable, hold original frames and report that AFME is unavailable. Never silently fall back to the retired RIFE filter.
 - A crash, incorrect frame, or synchronization hazard takes priority over throughput work.
 
-## Model distribution
+## Model policy
 
-- Bundle the pinned RIFE 4.25-lite model in the APK under `assets/models/rife-v4.25-lite/`.
-- Verify `flownet.param` and `flownet.bin` with their pinned SHA-256 values.
-- The Android application must not download the RIFE model from GitHub at runtime.
-- Native libmpv build artifacts may be pinned by release URL and SHA-256, but application model availability must remain offline.
+- The active frame-generation backend has no model files and no runtime downloads.
+- RIFE/ncnn is retired from the playback path because measured 1080p inference took about 724 ms per pair on the reference phone.
+- Native libmpv build artifacts may be pinned by release URL and SHA-256.
 
 ## Verification
 
 - Run Dart formatting, Flutter tests, static analysis, and the arm64 Android release build.
-- Verify the APK contains `libmpv.so`, `libkazumi_rife.so`, and both bundled model files.
-- Test on the connected OPlus device with Anime4K disabled first, then test the combined Anime4K + RIFE pipeline.
-- Confirm the mpv log reports the paired RIFE path before recording performance numbers.
-- Collect Android native crash logs and `ReKazumiRIFE` stage timings for every architecture iteration.
+- Verify the APK contains the AFME-patched `libmpv.so` and does not contain RIFE model files.
+- Test on the connected OPlus device with Anime4K disabled first, then test the combined Anime4K + AFME pipeline.
+- Confirm the mpv log reports both `Adreno AFME frame-generation extension detected` and `fixed 3x frame generation is active`.
+- Collect Android native crash logs and mpv render timing for every architecture iteration.
 - Compare media position against wall-clock time; UI `speed=1.0` alone is not a throughput measurement.
 
 ## Repository hygiene

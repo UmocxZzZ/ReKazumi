@@ -15,11 +15,8 @@ cd "$buildscripts"
 ./download.sh
 
 install -m 0644 \
-  "$rekazumi_root/native/libmpv/vf_rife_ncnn.c" \
-  "$buildscripts/deps/mpv/video/filter/vf_rife_ncnn.c"
-install -m 0644 \
-  "$rekazumi_root/native/libmpv/patches/mpv/0001-add-rife-ncnn-filter.patch" \
-  "$buildscripts/patches/mpv/0001-add-rife-ncnn-filter.patch"
+  "$rekazumi_root/native/libmpv/patches/mpv/0002-add-adreno-afme-frame-generation.patch" \
+  "$buildscripts/patches/mpv/0002-add-adreno-afme-frame-generation.patch"
 
 ./patch.sh
 
@@ -45,7 +42,7 @@ cp "$buildscripts"/prefix/arm64-v8a/usr/local/lib/*.so \
 
 find "$package_root" -exec touch -d "2025-01-01 00:00:00" {} +
 
-output="$buildscripts/rekazumi-rife-arm64-v8a.jar"
+output="$buildscripts/rekazumi-afme-arm64-v8a.jar"
 rm -f "$output"
 pushd "$package_root" >/dev/null
 find lib/arm64-v8a -type f | sort | zip -r -X "$output" -@

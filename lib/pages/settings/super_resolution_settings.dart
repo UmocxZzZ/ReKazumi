@@ -1,9 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:kazumi/bean/appbar/sys_app_bar.dart';
 import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
-import 'package:kazumi/services/player/rife_model_service.dart';
 import 'package:kazumi/services/storage/storage.dart';
 
 class SuperResolutionSettings extends StatefulWidget {
@@ -18,7 +19,6 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
   late bool disableWarning;
   late SuperResolutionMode superResolutionMode;
   late FrameInterpolationMode frameInterpolationMode;
-  bool preparingRife = false;
 
   @override
   void initState() {
@@ -37,7 +37,7 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
   Future<void> _changeFrameInterpolation(
     FrameInterpolationMode mode,
   ) async {
-    if (preparingRife || mode == frameInterpolationMode) return;
+    if (mode == frameInterpolationMode) return;
     if (!mode.enabled) {
       await GStorage.putSetting<int>(
         SettingsKeys.defaultFrameInterpolationMode,
@@ -47,10 +47,10 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
       return;
     }
 
-    if (!RifeModelService.instance.isSupported) {
+    if (!Platform.isAndroid) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('RIFE 3× 当前仅支持 Android arm64 设备')),
+        const SnackBar(content: Text('Adreno AFME 帧生成仅支持兼容的 Android 设备')),
       );
       return;
     }
@@ -60,10 +60,10 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
           builder: (context) => AlertDialog(
             title: const Text('启用动漫 3× 插帧？'),
             content: const Text(
-              '首次启用会下载约 11 MB 的 RIFE 4.25-lite 模型。'
-              '该模式面向 Quest 3、Snapdragon 8 Gen 2 及更高性能设备。\n\n'
-              '23.976 fps 会保持原始时间轴并输出 71.928 fps；'
-              '不会同步到 72 或 120 fps。',
+              '该模式使用 Snapdragon GPU 内置的 Adreno Frame Motion Engine，'
+              '不下载模型，也不会执行 RIFE 神经网络。\n\n'
+              '23.976 fps 会保持原始时间轴并生成 71.928 fps 的三相画面；'
+              '120 Hz 屏幕只负责重复呈现，不会生成更多中间帧。',
             ),
             actions: [
               TextButton(
@@ -72,7 +72,7 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
               ),
               FilledButton(
                 onPressed: () => Navigator.pop(context, true),
-                child: const Text('下载并启用'),
+                child: const Text('启用'),
               ),
             ],
           ),
@@ -80,26 +80,11 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
         false;
     if (!confirmed || !mounted) return;
 
-    setState(() => preparingRife = true);
-    try {
-      await RifeModelService.instance.ensureModel();
-      await GStorage.putSetting<int>(
-        SettingsKeys.defaultFrameInterpolationMode,
-        mode.storageValue,
-      );
-      if (!mounted) return;
-      setState(() => frameInterpolationMode = mode);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('RIFE 模型准备完成，将从下次播放开始启用')),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('RIFE 模型准备失败：$error')),
-      );
-    } finally {
-      if (mounted) setState(() => preparingRife = false);
-    }
+    await GStorage.putSetting<int>(
+      SettingsKeys.defaultFrameInterpolationMode,
+      mode.storageValue,
+    );
+    if (mounted) setState(() => frameInterpolationMode = mode);
   }
 
   @override
@@ -135,9 +120,7 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
             ],
           ),
           SettingsRadioSection<FrameInterpolationMode>(
-            title: Text(
-              preparingRife ? '正在下载并校验 RIFE 模型…' : '固定 3× 动漫插帧',
-            ),
+            title: const Text('固定 3× 硬件帧生成'),
             groupValue: frameInterpolationMode,
             onChanged: (value) {
               if (value != null) _changeFrameInterpolation(value);

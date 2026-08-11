@@ -6,8 +6,8 @@ enum FrameInterpolationMode {
   ),
   anime3x(
     storageValue: 1,
-    label: '动漫 3×（RIFE）',
-    description: '仅生成 1/3、2/3 两张中间帧；不追帧到屏幕刷新率',
+    label: '动漫 3×（Adreno AFME）',
+    description: '硬件生成 1/3、2/3 两张中间帧；120 Hz 仅负责呈现',
   );
 
   const FrameInterpolationMode({
