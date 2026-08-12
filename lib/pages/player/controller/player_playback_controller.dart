@@ -525,29 +525,17 @@ abstract class _PlayerPlaybackController with Store {
       if (!Platform.isAndroid) {
         throw UnsupportedError('Adreno AFME is only available on Android');
       }
-      final sourceFps = await _readSourceFrameRate(pp, currentPlayer);
-      if (!identical(mediaPlayer, currentPlayer)) return false;
-      final presentationFps = fixed3xPresentationFps(sourceFps);
-      if (presentationFps == null) {
-        throw StateError('Unsupported source frame rate: $sourceFps');
-      }
 
-      // Drive mpv at exactly source FPS x3. The physical 120 Hz display only
-      // holds these source/1/3/2/3 phases and never becomes the AFME clock.
-      await pp.setProperty(
-        'display-fps-override',
-        presentationFps.toStringAsFixed(6),
-      );
-      await pp.setProperty('video-sync', 'display-vdrop');
-      await pp.setProperty('tscale', 'oversample');
-      await pp.setProperty('interpolation-threshold', '-1');
+      // Keep mpv's source/audio clock untouched. The patched VO submits the
+      // original, 1/3 and 2/3 phases inside each source frame's PTS window.
+      await pp.setProperty('display-fps-override', '0');
+      await pp.setProperty('video-sync', 'audio');
+      await pp.setProperty('interpolation', 'no');
       await pp.setProperty('adreno-frame-generation', 'yes');
-      await pp.setProperty('interpolation', 'yes');
       frameInterpolationMode = mode;
       KazumiLogger().i(
-        'PlayerController: fixed 3x AFME source '
-        '${sourceFps.toStringAsFixed(6)} fps, presentation '
-        '${presentationFps.toStringAsFixed(6)} fps',
+        'PlayerController: independent source-timed 3x AFME enabled; '
+        'video-sync remains audio',
       );
       return true;
     } catch (error, stackTrace) {
@@ -559,29 +547,6 @@ abstract class _PlayerPlaybackController with Store {
       );
       return false;
     }
-  }
-
-  Future<double> _readSourceFrameRate(
-    NativePlayer player,
-    Player currentPlayer,
-  ) async {
-    for (var attempt = 0; attempt < 40; attempt++) {
-      if (!identical(mediaPlayer, currentPlayer)) {
-        throw StateError('Player was replaced while reading source FPS');
-      }
-      for (final property in const ['container-fps', 'estimated-vf-fps']) {
-        try {
-          final value = double.tryParse(await player.getProperty(property));
-          if (value != null && value.isFinite && value > 0) {
-            return value;
-          }
-        } catch (_) {
-          // The properties are unavailable until mpv has decoded video.
-        }
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    throw StateError('mpv did not report the source frame rate');
   }
 
   Future<void> setPlaybackSpeed(double playerSpeed) async {

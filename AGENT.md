@@ -30,8 +30,10 @@
 - Generate both 3x intermediate textures once per original frame pair with scale factors `-2/3` and `-1/3`.
 - Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
 - Preserve original frames as the only temporal inputs.
-- Keep `video-sync=display-vdrop`: this enables the presentation queue while mpv keeps the video speed factor at 1.0 and follows the audio/source timeline.
-- Android's mpv OpenGL context does not report `VOCTRL_GET_DISPLAY_FPS`. After the video opens, read its source FPS from mpv and set `display-fps-override` to exactly source FPS x3 before enabling `display-vdrop`. Never use the physical display refresh rate as the AFME presentation clock.
+- Keep `video-sync=audio` and `display-fps-override=0`. Display-sync was rejected by device testing because a render stall makes mpv catch up and visibly accelerates the media timeline.
+- Drive the fixed original/1/3/2/3 phases inside the VO from each source frame's realtime PTS and duration. Generated phases that miss their deadline must be dropped rather than submitted in a catch-up burst.
+- Request at least one future original frame from mpv without enabling its temporal interpolation. The renderer uses only that original pair as AFME inputs.
+- Treat AFME as potentially asynchronous on Adreno. Complete each extension call before reusing its inputs or issuing the second job; correctness and driver isolation take priority over throughput.
 - Force the AFME backend to `vo=gpu`, `gpu-api=opengl`, and `gpu-context=android`; `gpu-next` is Vulkan and cannot call the GLES extension.
 - If the extension or compatible texture format is unavailable, hold original frames and report that AFME is unavailable. Never silently fall back to the retired RIFE filter.
 - A crash, incorrect frame, or synchronization hazard takes priority over throughput work.

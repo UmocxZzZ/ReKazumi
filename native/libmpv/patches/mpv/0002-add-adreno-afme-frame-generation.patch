@@ -1,13 +1,19 @@
 diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
-index f9649501f..2a41d8cfe 100644
+index f9649501f..773782a7e 100644
 --- a/video/out/gpu/video.c
 +++ b/video/out/gpu/video.c
-@@ -45,2 +45,4 @@
+@@ -43,6 +43,8 @@
+ #include "video/out/aspect.h"
+ #include "video/out/dither.h"
  #include "video/out/vo.h"
 +#include "video/out/opengl/ra_gl.h"
 +#include "video/out/opengl/utils.h"
  
-@@ -124,2 +126,7 @@ struct surface {
+ // must be sorted, and terminated with 0
+ int filter_sizes[] =
+@@ -122,6 +124,11 @@ struct surface {
+     double pts;
+ };
  
 +typedef void (GLAPIENTRY *PFNGLQCOMFRAMEEXTRAPOLATION)(GLuint src1,
 +                                                       GLuint src2,
@@ -15,7 +21,11 @@ index f9649501f..2a41d8cfe 100644
 +                                                       GLfloat scale_factor);
 +
  #define SURFACES_MAX 10
-@@ -212,2 +219,17 @@ struct gl_video {
+ 
+ struct cached_file {
+@@ -210,6 +217,21 @@ struct gl_video {
+ 
+     struct ra_buf *hdr_peak_ssbo;
      struct surface surfaces[SURFACES_MAX];
 +    struct ra_tex *afme_tex[2];
 +    uint64_t afme_source_ids[2];
@@ -33,11 +43,19 @@ index f9649501f..2a41d8cfe 100644
 +    uint64_t afme_stats_bypass_invalid;
 +    uint64_t afme_stats_bypass_still;
  
-@@ -541,2 +563,3 @@ const struct m_sub_options gl_video_conf = {
+     // user pass descriptions and textures
+     struct tex_hook *tex_hooks;
+@@ -539,6 +561,7 @@ const struct m_sub_options gl_video_conf = {
+         {"background-tile-size", OPT_INT(background_tile_size), M_RANGE(1, 4096)},
+         {"interpolation", OPT_BOOL(interpolation)},
          {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
 +        {"adreno-frame-generation", OPT_BOOL(adreno_frame_generation)},
          {"blend-subtitles", OPT_CHOICE(blend_subs,
-@@ -622,2 +645,13 @@ static void gl_video_reset_surfaces(struct gl_video *p)
+             {"no", BLEND_SUBS_NO},
+             {"yes", BLEND_SUBS_YES},
+@@ -620,6 +643,17 @@ static void gl_video_reset_surfaces(struct gl_video *p)
+     p->surface_now = 0;
+     p->frames_drawn = 0;
      p->output_tex_valid = false;
 +    p->afme_source_ids[0] = 0;
 +    p->afme_source_ids[1] = 0;
@@ -51,13 +69,21 @@ index f9649501f..2a41d8cfe 100644
 +    p->afme_stats_bypass_invalid = 0;
 +    p->afme_stats_bypass_still = 0;
  }
-@@ -675,2 +709,5 @@ static void uninit_rendering(struct gl_video *p)
+ 
+ static void gl_video_reset_hooks(struct gl_video *p)
+@@ -673,6 +707,9 @@ static void uninit_rendering(struct gl_video *p)
+     for (int n = 0; n < SURFACES_MAX; n++)
+         ra_tex_free(p->ra, &p->surfaces[n].tex);
  
 +    for (int n = 0; n < 2; n++)
 +        ra_tex_free(p->ra, &p->afme_tex[n]);
 +
      for (int n = 0; n < p->num_hook_textures; n++)
-@@ -3269,2 +3306,211 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
+         ra_tex_free(p->ra, &p->hook_textures[n]);
+ 
+@@ -3267,6 +3304,218 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
+     return true;
+ }
  
 +enum {
 +    AFME_EVENT_INPUT = 1 << 0,
@@ -245,10 +271,13 @@ index f9649501f..2a41d8cfe 100644
 +
 +    // QCOM defines scale relative to the second source. Negative values select
 +    // instants before it: -2/3 is t=1/3 and -1/3 is t=2/3.
++    gl->Finish();
 +    p->afme_extrapolate(source_texture[0], source_texture[1],
 +                        output_texture[0], -2.0f / 3.0f);
++    gl->Finish();
 +    p->afme_extrapolate(source_texture[0], source_texture[1],
 +                        output_texture[1], -1.0f / 3.0f);
++    gl->Finish();
 +
 +    GLenum error = gl->GetError();
 +    if (error != GL_NO_ERROR) {
@@ -269,7 +298,22 @@ index f9649501f..2a41d8cfe 100644
 +}
 +
  // Draws an interpolate frame to fbo, based on the frame timing in t
-@@ -3376,2 +3622,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+ // flags: bit set of RENDER_FRAME_* flags
+ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3312,7 +3561,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+     bool linear = tscale->conf.kernel.function == SCALER_LINEAR;
+     int size;
+ 
+-    if (oversample || linear) {
++    if (p->opts.adreno_frame_generation) {
++        size = 2;
++    } else if (oversample || linear) {
+         size = 2;
+     } else {
+         mp_assert(tscale->kernel && !tscale->kernel->polar);
+@@ -3374,11 +3625,22 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+         pass_info_reset(p, true);
+     pass_describe(p, "interpolation");
      if (!valid || t->still) {
 +        if (p->opts.adreno_frame_generation) {
 +            if (!valid)
@@ -279,15 +323,28 @@ index f9649501f..2a41d8cfe 100644
 +            afme_report_stats(p);
 +        }
          // surface_now is guaranteed to be valid, so we can safely use it.
-@@ -3381,2 +3634,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-         double mix = t->vsync_offset / t->ideal_frame_duration;
+         pass_read_tex(p, p->surfaces[surface_now].tex);
+         p->is_interpolated = false;
+     } else {
+-        double mix = t->vsync_offset / t->ideal_frame_duration;
++        double mix = t->frame_generation_multiplier > 1
++                   ? (double)t->frame_generation_phase /
++                     t->frame_generation_multiplier
++                   : t->vsync_offset / t->ideal_frame_duration;
 +        int afme_first = surface_now;
          // The scaler code always wants the fcoord to be between 0 and 1,
-@@ -3391,2 +3645,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+         // so we try to adjust by using the previous set of N frames instead
+         // (which requires some extra checking to make sure it's valid)
+@@ -3389,13 +3651,38 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+             {
+                 mix += 1.0;
                  surface_bse = prev;
 +                afme_first = prev;
              } else {
-@@ -3397,3 +3652,26 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+                 mix = 0.0; // at least don't blow up, this should only
+                            // ever happen at the start of playback
+             }
+         }
  
 -        if (oversample) {
 +        bool used_afme = false;
@@ -297,7 +354,8 @@ index f9649501f..2a41d8cfe 100644
 +            struct surface *second = &p->surfaces[surface_wrap(afme_first + 1)];
 +            struct ra_tex *selected = first->tex;
 +
-+            if (phase > 0 && afme_generate_pair(p, first, second))
++            bool generated = afme_generate_pair(p, first, second);
++            if (phase > 0 && generated)
 +                selected = p->afme_tex[phase - 1];
 +
 +            p->afme_stats_phase[phase]++;
@@ -315,38 +373,70 @@ index f9649501f..2a41d8cfe 100644
 +
 +        if (!used_afme && oversample) {
              // Oversample uses the frame area as mix ratio, not the vsync
-@@ -3410,3 +3688,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+             // position itself
+             double vsync_dist = t->vsync_interval / t->ideal_frame_duration,
+@@ -3408,20 +3695,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+         }
+ 
          // Blend the frames together
 -        if (oversample || linear) {
 +        if (!used_afme && (oversample || linear)) {
              gl_sc_uniform_dynamic(p->sc);
-@@ -3416,3 +3694,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+             gl_sc_uniform_f(p->sc, "inter_coeff", mix);
+             GLSL(color = mix(texture(texture0, texcoord0),
+                              texture(texture1, texcoord1),
                               inter_coeff);)
 -        } else {
 +        } else if (!used_afme) {
              gl_sc_uniform_dynamic(p->sc);
-@@ -3423,3 +3701,3 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+             gl_sc_uniform_f(p->sc, "fcoord", mix);
+             pass_sample_separated_gen(p->sc, tscale, 0, 0);
+         }
+ 
          // Load all the required frames
 -        for (int i = 0; i < size; i++) {
 +        for (int i = 0; !used_afme && i < size; i++) {
              struct image img =
-@@ -3436,3 +3714,4 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+                 image_wrap(p->surfaces[surface_wrap(surface_bse+i)].tex,
+                            PLANE_RGB, p->components);
+@@ -3434,7 +3721,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+ 
+         MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
                   t->ideal_frame_duration, t->vsync_interval, mix);
 -        p->is_interpolated = true;
 +        if (!used_afme)
 +            p->is_interpolated = true;
      }
-@@ -3487,2 +3766,17 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
+     pass_draw_to_screen(p, fbo, flags);
+ 
+@@ -3477,14 +3765,34 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
+     }
+ 
+     if (has_frame) {
+-        bool interpolate = p->opts.interpolation && frame->display_synced &&
++        bool source_timed_afme = p->opts.adreno_frame_generation &&
++                                 frame->frame_generation_multiplier == 3;
++        bool interpolate = (source_timed_afme ||
++                            (p->opts.interpolation && frame->display_synced)) &&
+                            (p->frames_drawn || !frame->still);
+-        if (interpolate) {
++        if (interpolate && !source_timed_afme) {
+             double ratio = frame->ideal_frame_duration / frame->vsync_interval;
+             if (fabs(ratio - 1.0) < p->opts.interpolation_threshold)
+                 interpolate = false;
+         }
  
 +        int64_t afme_gate_now_ns = mp_time_ns();
 +        if (!p->afme_gate_last_ns ||
 +            afme_gate_now_ns - p->afme_gate_last_ns >= MP_TIME_S_TO_NS(1))
 +        {
 +            MP_INFO(p, "Adreno AFME gate: option=%d interpolation=%d "
-+                    "display-synced=%d interpolate=%d still=%d drawn=%d "
++                    "display-synced=%d source-timed=%d phase=%d "
++                    "interpolate=%d still=%d drawn=%d "
 +                    "ideal-ms=%.3f vsync-ms=%.3f\n",
 +                    p->opts.adreno_frame_generation, p->opts.interpolation,
-+                    frame->display_synced, interpolate, frame->still,
++                    frame->display_synced, source_timed_afme,
++                    frame->frame_generation_phase, interpolate, frame->still,
 +                    p->frames_drawn,
 +                    frame->ideal_frame_duration * 1000.0,
 +                    frame->vsync_interval * 1000.0);
@@ -354,7 +444,11 @@ index f9649501f..2a41d8cfe 100644
 +        }
 +
          if (interpolate) {
-@@ -4213,2 +4507,15 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+             gl_video_interpolate_frame(p, frame, fbo, flags);
+         } else {
+@@ -4211,6 +4519,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+         .video_eq = mp_csp_equalizer_create(p, g),
+         .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
      };
 +
 +    if (ra_is_gl(ra)) {
@@ -370,11 +464,157 @@ index f9649501f..2a41d8cfe 100644
 +        }
 +    }
      // make sure this variable is initialized to *something*
+     p->pass = p->pass_fresh;
+     struct gl_video_opts *opts = p->opts_cache->opts;
+@@ -4304,7 +4625,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
+         }
+     }
+ 
++    if (p->opts.adreno_frame_generation)
++        queue_size = MPMAX(queue_size, 2);
++
+     vo_set_queue_params(vo, 0, queue_size);
++    vo_set_frame_generation(vo, p->opts.adreno_frame_generation ? 3 : 1);
+ }
+ 
+ static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
 diff --git a/video/out/gpu/video.h b/video/out/gpu/video.h
 index 4f80f559f..1b09738d4 100644
 --- a/video/out/gpu/video.h
 +++ b/video/out/gpu/video.h
-@@ -168,2 +168,3 @@ struct gl_video_opts {
+@@ -166,6 +166,7 @@ struct gl_video_opts {
+     int background_tile_size;
+     bool interpolation;
      float interpolation_threshold;
 +    bool adreno_frame_generation;
      int blend_subs;
+     char **user_shaders;
+     char **user_shader_opts;
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 959371266..1c6743079 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -171,6 +171,7 @@ struct vo_internal {
+     bool rendering;                 // true if an image is being rendered
+     struct vo_frame *frame_queued;  // should be drawn next
+     int req_frames;                 // VO's requested value of num_frames
++    int frame_generation_multiplier;// independent source-timed VO presents
+     uint64_t current_frame_id;
+ 
+     double display_fps;
+@@ -881,6 +882,15 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+            (!in->current_frame || in->current_frame->num_vsyncs < 1));
+     in->hasframe = true;
+     frame->frame_id = ++(in->current_frame_id);
++    frame->frame_generation_multiplier = in->frame_generation_multiplier;
++    frame->frame_generation_phase = 0;
++    if (!frame->display_synced && frame->frame_generation_multiplier > 1 &&
++        frame->duration > 0 && frame->num_frames > 1)
++    {
++        frame->num_vsyncs = frame->frame_generation_multiplier;
++    } else {
++        frame->frame_generation_multiplier = 1;
++    }
+     in->frame_queued = frame;
+     in->wakeup_pts = frame->display_synced
+                    ? 0 : frame->pts + MPMAX(frame->duration, 0);
+@@ -938,7 +948,9 @@ static bool render_frame(struct vo *vo)
+         in->frame_queued = NULL;
+     } else if (in->paused || !in->current_frame || !in->hasframe ||
+                (in->current_frame->display_synced && in->current_frame->num_vsyncs < 1) ||
+-               !in->current_frame->display_synced)
++               (!in->current_frame->display_synced &&
++                in->current_frame->frame_generation_multiplier <= 1) ||
++               in->current_frame->num_vsyncs < 1)
+     {
+         goto done;
+     }
+@@ -954,6 +966,15 @@ static bool render_frame(struct vo *vo)
+     int64_t now = mp_time_ns();
+     int64_t pts = frame->pts;
+     int64_t duration = frame->duration;
++    bool source_timed_generation = !frame->display_synced &&
++        frame->frame_generation_multiplier > 1;
++    if (source_timed_generation) {
++        frame->frame_generation_phase = frame->frame_generation_multiplier -
++                                        frame->num_vsyncs;
++        pts += frame->frame_generation_phase * duration /
++               frame->frame_generation_multiplier;
++        frame->pts = pts;
++    }
+     int64_t end_time = pts + duration;
+ 
+     // Time at which we should flip_page on the VO.
+@@ -962,13 +983,22 @@ static bool render_frame(struct vo *vo)
+     // "normal" strict drop threshold.
+     in->dropped_frame = duration >= 0 && end_time < now;
+ 
++    // Generated phases are optional presentation work. If GPU work made us
++    // miss their deadline, skip them instead of presenting them back-to-back
++    // and making a visible catch-up burst.
++    bool drop_optional_phase = source_timed_generation &&
++        frame->frame_generation_phase > 0 &&
++        now > pts + MP_TIME_MS_TO_NS(2);
++
+     in->dropped_frame &= !frame->display_synced;
+     in->dropped_frame &= !(vo->driver->caps & VO_CAP_FRAMEDROP);
+     in->dropped_frame &= frame->can_drop;
+     // Even if we're hopelessly behind, rather degrade to 10 FPS playback,
+     // instead of just freezing the display forever.
+-    in->dropped_frame &= now - in->prev_vsync < MP_TIME_MS_TO_NS(100);
++    if (!source_timed_generation || frame->frame_generation_phase == 0)
++        in->dropped_frame &= now - in->prev_vsync < MP_TIME_MS_TO_NS(100);
+     in->dropped_frame &= in->hasframe_rendered;
++    in->dropped_frame |= drop_optional_phase;
+ 
+     // Setup parameters for the next time this frame is drawn. ("frame" is the
+     // frame currently drawn, while in->current_frame is the potentially next.)
+@@ -1064,7 +1094,8 @@ static bool render_frame(struct vo *vo)
+     }
+ 
+     if (in->current_frame && in->current_frame->num_vsyncs &&
+-        in->current_frame->display_synced)
++        (in->current_frame->display_synced ||
++         in->current_frame->frame_generation_multiplier > 1))
+         more_frames = true;
+ 
+     if (in->frame_queued && in->frame_queued->display_synced)
+@@ -1350,6 +1381,14 @@ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
++void vo_set_frame_generation(struct vo *vo, int multiplier)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    in->frame_generation_multiplier = MPCLAMP(multiplier, 1, 3);
++    mp_mutex_unlock(&in->lock);
++}
++
+ int vo_get_num_req_frames(struct vo *vo)
+ {
+     struct vo_internal *in = vo->in;
+diff --git a/video/out/vo.h b/video/out/vo.h
+index a98b0f949..1c074af4e 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -259,6 +259,11 @@ struct vo_frame {
+     bool still;
+     // Frames are output as fast as possible, with implied vsync blocking.
+     bool display_synced;
++    // Independent source-timed frame generation. Unlike display_synced, this
++    // never changes the player clock or audio speed. Phase 0 is the original
++    // frame; phases 1 and 2 are the fixed 1/3 and 2/3 presentations.
++    int frame_generation_multiplier;
++    int frame_generation_phase;
+     // Dropping the frame is allowed if the VO is behind.
+     bool can_drop;
+     // The current frame to be drawn.
+@@ -550,6 +555,7 @@ void vo_event(struct vo *vo, int event);
+ int vo_query_and_reset_events(struct vo *vo, int events);
+ struct mp_image *vo_get_current_frame(struct vo *vo);
+ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames);
++void vo_set_frame_generation(struct vo *vo, int multiplier);
+ int vo_get_num_req_frames(struct vo *vo);
+ double vo_get_vsync_interval(struct vo *vo);
+ double vo_get_estimated_vsync_interval(struct vo *vo);

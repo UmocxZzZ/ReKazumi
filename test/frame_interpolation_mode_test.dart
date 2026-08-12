@@ -21,11 +21,4 @@ void main() {
       FrameInterpolationMode.off,
     );
   });
-
-  test('fixed 3x presentation clock follows source FPS, not display Hz', () {
-    expect(fixed3xPresentationFps(24000 / 1001), closeTo(72000 / 1001, 1e-9));
-    expect(fixed3xPresentationFps(24), 72);
-    expect(fixed3xPresentationFps(double.nan), isNull);
-    expect(fixed3xPresentationFps(60), isNull);
-  });
 }
