@@ -242,8 +242,14 @@ abstract class _PlayerPlaybackController with Store {
     superResolutionMode = SuperResolutionMode.fromStorageValue(
       GStorage.getSetting(SettingsKeys.defaultSuperResolutionMode),
     );
+    final storedFrameInterpolationMode =
+        GStorage.getSetting<int>(SettingsKeys.defaultFrameInterpolationMode);
     frameInterpolationMode = FrameInterpolationMode.fromStorageValue(
-      GStorage.getSetting(SettingsKeys.defaultFrameInterpolationMode),
+      storedFrameInterpolationMode,
+    );
+    KazumiLogger().i(
+      'PlayerController: frame interpolation setting '
+      'stored=$storedFrameInterpolationMode resolved=${frameInterpolationMode.name}',
     );
     hAenable = GStorage.getSetting(SettingsKeys.hAenable);
     androidEnableOpenSLES =
@@ -370,22 +376,8 @@ abstract class _PlayerPlaybackController with Store {
 
       if (Platform.isAndroid && frameInterpolationMode.enabled) {
         // AFME is an OpenGL ES driver feature. Keep hardware decoding, but
-        // force mpv's GPU renderer onto the Android EGL context. All AFME
-        // options must be set before VideoController creates the VO: the VO
-        // uses them during its initial queue configuration to request the
-        // next original frame and enable the three source-timed phases.
+        // force mpv's GPU renderer onto the Android EGL context.
         videoRenderer = 'gpu';
-        await pp.setProperty('gpu-api', 'opengl');
-        await pp.setProperty('gpu-context', 'android');
-        if (!await setFrameInterpolation(
-          frameInterpolationMode,
-          player: player,
-        )) {
-          throw StateError('Failed to configure Adreno AFME before VO init');
-        }
-        if (!isCurrentPlayer(player)) {
-          return await _discardIfNotCurrent(candidate);
-        }
       }
 
       if (videoRenderer == 'mediacodec_embed') {
@@ -405,6 +397,26 @@ abstract class _PlayerPlaybackController with Store {
           androidAttachSurfaceAfterVideoParameters: false,
         ),
       );
+      await pp.waitForVideoControllerInitializationIfAttached;
+      if (!isCurrentPlayer(player)) {
+        return await _discardIfNotCurrent(candidate);
+      }
+
+      // AndroidVideoController initializes vo=null and gpu-api=auto. Apply
+      // AFME only after that initialization has completed, but before opening
+      // media, so these renderer options cannot be overwritten and the first
+      // video queue is configured for two original frames and three phases.
+      if (frameInterpolationMode.enabled &&
+          !await setFrameInterpolation(
+            frameInterpolationMode,
+            player: player,
+          )) {
+        throw StateError('Failed to configure Adreno AFME after VO init');
+      }
+      if (!isCurrentPlayer(player)) {
+        return await _discardIfNotCurrent(candidate);
+      }
+
       player.setPlaylistMode(PlaylistMode.none);
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
@@ -533,13 +545,16 @@ abstract class _PlayerPlaybackController with Store {
 
       // Keep mpv's source/audio clock untouched. The patched VO submits the
       // original, 1/3 and 2/3 phases inside each source frame's PTS window.
+      await pp.setProperty('gpu-api', 'opengl');
+      await pp.setProperty('gpu-context', 'android');
       await pp.setProperty('display-fps-override', '0');
       await pp.setProperty('video-sync', 'audio');
       await pp.setProperty('interpolation', 'no');
       await pp.setProperty('adreno-frame-generation', 'yes');
       frameInterpolationMode = mode;
       KazumiLogger().i(
-        'PlayerController: source-timed 3x AFME configured before VO init; '
+        'PlayerController: source-timed 3x AFME configured after '
+        'VideoController init and before media open; '
         'video-sync=audio, interpolation=no, display-fps-override=0',
       );
       return true;

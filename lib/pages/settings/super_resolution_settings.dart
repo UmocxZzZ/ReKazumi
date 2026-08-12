@@ -6,6 +6,7 @@ import 'package:kazumi/bean/settings/settings_list.dart';
 import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/services/storage/storage.dart';
+import 'package:kazumi/services/logging/logger.dart';
 
 class SuperResolutionSettings extends StatefulWidget {
   const SuperResolutionSettings({super.key});
@@ -42,6 +43,10 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
       await GStorage.putSetting<int>(
         SettingsKeys.defaultFrameInterpolationMode,
         mode.storageValue,
+      );
+      KazumiLogger().i(
+        'Settings: frame interpolation saved '
+        'value=${mode.storageValue} mode=${mode.name}',
       );
       if (mounted) setState(() => frameInterpolationMode = mode);
       return;
@@ -83,6 +88,10 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
     await GStorage.putSetting<int>(
       SettingsKeys.defaultFrameInterpolationMode,
       mode.storageValue,
+    );
+    KazumiLogger().i(
+      'Settings: frame interpolation saved '
+      'value=${mode.storageValue} mode=${mode.name}',
     );
     if (mounted) setState(() => frameInterpolationMode = mode);
   }
