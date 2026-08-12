@@ -1,5 +1,6 @@
 // ignore_for_file: library_private_types_in_public_api
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -456,22 +457,15 @@ abstract class _PlayerPlaybackController with Store {
       }
 
       if (frameInterpolationMode.enabled) {
-        // The Android controller changes vo to null and back to gpu when the
-        // Surface is attached. Applying a render option before that transition
-        // configures a renderer which is immediately discarded. The first
-        // frame signal is emitted only after a real video size and Surface have
-        // reached the controller, so the property update now targets the live
-        // VO used for playback.
-        await videoController!.waitUntilFirstFrameRendered;
-        if (!isCurrentPlayer(player)) {
-          return await _discardIfNotCurrent(candidate);
-        }
-        if (!await setFrameInterpolation(
+        // Do not await this here: the Video widget is mounted only after this
+        // method returns and loading is cleared by PlayerController. Waiting
+        // synchronously would prevent the Android Surface (and first frame)
+        // from ever existing.
+        unawaited(_enableFrameInterpolationOnLiveVideoOutput(
           frameInterpolationMode,
-          player: player,
-        )) {
-          throw StateError('Failed to configure Adreno AFME on the live VO');
-        }
+          player,
+          videoController!,
+        ));
       }
 
       if (cachePolicy.networkForced) {
@@ -586,6 +580,33 @@ abstract class _PlayerPlaybackController with Store {
         stackTrace: stackTrace,
       );
       return false;
+    }
+  }
+
+  Future<void> _enableFrameInterpolationOnLiveVideoOutput(
+    FrameInterpolationMode mode,
+    Player player,
+    VideoController controller,
+  ) async {
+    try {
+      // AndroidVideoController changes vo to null and back to gpu when its
+      // Surface is attached. This signal arrives after the Video widget has a
+      // real size, so the option update targets the VO actually presenting.
+      await controller.waitUntilFirstFrameRendered;
+      if (!isCurrentPlayer(player) || !identical(videoController, controller)) {
+        return;
+      }
+      if (!await setFrameInterpolation(mode, player: player)) {
+        throw StateError('Failed to configure Adreno AFME on the live VO');
+      }
+    } catch (error, stackTrace) {
+      if (!isCurrentPlayer(player)) return;
+      KazumiLogger().e(
+        'PlayerController: failed to apply AFME after Android Surface attach',
+        error: error,
+        stackTrace: stackTrace,
+        forceLog: true,
+      );
     }
   }
 
