@@ -517,19 +517,38 @@ abstract class _PlayerPlaybackController with Store {
         await pp.setProperty('adreno-frame-generation', 'no');
         await pp.setProperty('interpolation', 'no');
         await pp.setProperty('video-sync', 'audio');
+        await pp.setProperty('display-fps-override', '0');
         frameInterpolationMode = FrameInterpolationMode.off;
         return true;
+      }
+
+      if (!Platform.isAndroid) {
+        throw UnsupportedError('Adreno AFME is only available on Android');
+      }
+      final displayRefreshRate =
+          await PlatformEnvironmentService.getDisplayRefreshRate();
+      if (!identical(mediaPlayer, currentPlayer)) return false;
+      if (!displayRefreshRate.isFinite || displayRefreshRate < 20) {
+        throw StateError('Android did not report a valid display refresh rate');
       }
 
       // display-vdrop preserves source/audio speed (speed factor remains 1.0)
       // while allowing mpv's presentation queue to run at display cadence.
       // The renderer quantizes that cadence to source, 1/3 and 2/3 only.
+      await pp.setProperty(
+        'display-fps-override',
+        displayRefreshRate.toStringAsFixed(3),
+      );
       await pp.setProperty('video-sync', 'display-vdrop');
       await pp.setProperty('tscale', 'oversample');
       await pp.setProperty('interpolation-threshold', '-1');
       await pp.setProperty('adreno-frame-generation', 'yes');
       await pp.setProperty('interpolation', 'yes');
       frameInterpolationMode = mode;
+      KazumiLogger().i(
+        'PlayerController: fixed 3x AFME presentation clock '
+        '${displayRefreshRate.toStringAsFixed(3)} Hz',
+      );
       return true;
     } catch (error, stackTrace) {
       frameInterpolationMode = FrameInterpolationMode.off;
