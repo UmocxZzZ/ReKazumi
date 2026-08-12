@@ -19,12 +19,10 @@ on:
       - .github/workflows/validate-rife-android.yml
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
 
 jobs:
   validate:
-    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -96,26 +94,3 @@ jobs:
           name: rekazumi-afme-android-arm64
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-
-  publish-validated-apk:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
-    steps:
-      - name: Download validated APK artifact
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh run download 31563735226 --repo "${{ github.repository }}" --name rekazumi-afme-android-arm64 --dir dist
-
-      - name: Rename APK
-        run: mv dist/app-release.apk dist/ReKazumi-afme-arm64.apk
-
-      - name: Publish validated APK release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: afme-apk-v1
-          name: ReKazumi Adreno AFME APK v1
-          target_commitish: 077f5da
-          prerelease: true
-          files: dist/ReKazumi-afme-arm64.apk
