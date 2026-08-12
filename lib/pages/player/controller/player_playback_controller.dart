@@ -408,8 +408,14 @@ abstract class _PlayerPlaybackController with Store {
       // will still recreate --vo once its Surface becomes available, so AFME
       // itself is deliberately enabled after the first frame below.
       if (frameInterpolationMode.enabled) {
-        await pp.setProperty('gpu-api', 'opengl');
-        await pp.setProperty('gpu-context', 'android');
+        await _setMpvOption(pp, 'gpu-api', 'opengl');
+        await _setMpvOption(pp, 'gpu-context', 'android');
+        if (!await setFrameInterpolation(
+          frameInterpolationMode,
+          player: player,
+        )) {
+          throw StateError('Failed to configure Adreno AFME before media open');
+        }
       }
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
@@ -541,10 +547,10 @@ abstract class _PlayerPlaybackController with Store {
       if (!identical(mediaPlayer, currentPlayer)) return false;
 
       if (!mode.enabled) {
-        await pp.setProperty('adreno-frame-generation', 'no');
-        await pp.setProperty('interpolation', 'no');
-        await pp.setProperty('video-sync', 'audio');
-        await pp.setProperty('display-fps-override', '0');
+        await _setMpvOption(pp, 'adreno-frame-generation', 'no');
+        await _setMpvOption(pp, 'interpolation', 'no');
+        await _setMpvOption(pp, 'video-sync', 'audio');
+        await _setMpvOption(pp, 'display-fps-override', '0');
         frameInterpolationMode = FrameInterpolationMode.off;
         return true;
       }
@@ -555,11 +561,13 @@ abstract class _PlayerPlaybackController with Store {
 
       // Keep mpv's source/audio clock untouched. The patched VO submits the
       // original, 1/3 and 2/3 phases inside each source frame's PTS window.
-      await pp.setProperty('display-fps-override', '0');
-      await pp.setProperty('video-sync', 'audio');
-      await pp.setProperty('interpolation', 'no');
-      await pp.setProperty('adreno-frame-generation', 'yes');
-      final applied = await pp.getProperty('adreno-frame-generation');
+      await _setMpvOption(pp, 'display-fps-override', '0');
+      await _setMpvOption(pp, 'video-sync', 'audio');
+      await _setMpvOption(pp, 'interpolation', 'no');
+      await _setMpvOption(pp, 'adreno-frame-generation', 'yes');
+      final applied = await pp.getProperty(
+        'options/adreno-frame-generation',
+      );
       if (applied != 'yes') {
         throw StateError(
           'mpv rejected adreno-frame-generation=yes (readback=$applied)',
@@ -580,6 +588,24 @@ abstract class _PlayerPlaybackController with Store {
         stackTrace: stackTrace,
       );
       return false;
+    }
+  }
+
+  Future<void> _setMpvOption(
+    NativePlayer player,
+    String name,
+    String value,
+  ) async {
+    // Use mpv's explicit option namespace. A bare property normally bridges to
+    // an option with the same name, but media_kit discards the native return
+    // code of mpv_set_property_string. The command path plus options/ prefix
+    // makes the intended global option write unambiguous.
+    await player.command(['set', 'options/$name', value]);
+    final applied = await player.getProperty('options/$name');
+    final matches =
+        applied == value || (value == '0' && double.tryParse(applied) == 0.0);
+    if (!matches) {
+      throw StateError('mpv option $name=$value read back as $applied');
     }
   }
 
