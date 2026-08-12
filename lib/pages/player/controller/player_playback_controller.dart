@@ -370,10 +370,22 @@ abstract class _PlayerPlaybackController with Store {
 
       if (Platform.isAndroid && frameInterpolationMode.enabled) {
         // AFME is an OpenGL ES driver feature. Keep hardware decoding, but
-        // force mpv's GPU renderer onto the Android EGL context.
+        // force mpv's GPU renderer onto the Android EGL context. All AFME
+        // options must be set before VideoController creates the VO: the VO
+        // uses them during its initial queue configuration to request the
+        // next original frame and enable the three source-timed phases.
         videoRenderer = 'gpu';
         await pp.setProperty('gpu-api', 'opengl');
         await pp.setProperty('gpu-context', 'android');
+        if (!await setFrameInterpolation(
+          frameInterpolationMode,
+          player: player,
+        )) {
+          throw StateError('Failed to configure Adreno AFME before VO init');
+        }
+        if (!isCurrentPlayer(player)) {
+          return await _discardIfNotCurrent(candidate);
+        }
       }
 
       if (videoRenderer == 'mediacodec_embed') {
@@ -432,13 +444,6 @@ abstract class _PlayerPlaybackController with Store {
       );
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
-      }
-
-      if (frameInterpolationMode.enabled) {
-        await setFrameInterpolation(frameInterpolationMode, player: player);
-        if (!isCurrentPlayer(player)) {
-          return await _discardIfNotCurrent(candidate);
-        }
       }
 
       if (cachePolicy.networkForced) {
@@ -534,8 +539,8 @@ abstract class _PlayerPlaybackController with Store {
       await pp.setProperty('adreno-frame-generation', 'yes');
       frameInterpolationMode = mode;
       KazumiLogger().i(
-        'PlayerController: independent source-timed 3x AFME enabled; '
-        'video-sync remains audio',
+        'PlayerController: source-timed 3x AFME configured before VO init; '
+        'video-sync=audio, interpolation=no, display-fps-override=0',
       );
       return true;
     } catch (error, stackTrace) {

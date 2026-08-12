@@ -54,9 +54,10 @@ abstract class _PlayerDebugController with Store {
     await playerLogSubscription?.cancel();
     if (!isCurrentPlayer(player)) return;
     playerLogSubscription = player.stream.log.listen((event) {
-      playerLog.add(event.toString());
-      if (playerDebugMode) {
-        KazumiLogger().i("MPV: ${event.toString()}", forceLog: true);
+      final message = event.toString();
+      playerLog.add(message);
+      if (playerDebugMode || message.contains('Adreno AFME')) {
+        KazumiLogger().i('MPV: $message', forceLog: true);
       }
     });
     await playerWidthSubscription?.cancel();
