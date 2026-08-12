@@ -89,8 +89,6 @@ class MainActivity: AudioServiceActivity() {
             } else if (call.method == "getAndroidSdkVersion") {
                 val sdkVersion = getAndroidSdkVersion()
                 result.success(sdkVersion)
-            } else if (call.method == "getDisplayRefreshRate") {
-                result.success(getDisplayRefreshRate())
             } else if (call.method == "enterFullscreen") {
                 enterAndroidFullscreen()
                 result.success(null)
@@ -159,15 +157,6 @@ class MainActivity: AudioServiceActivity() {
 
     private fun getAndroidSdkVersion(): Int {
         return Build.VERSION.SDK_INT
-    }
-
-    private fun getDisplayRefreshRate(): Double {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.refreshRate?.toDouble() ?: 0.0
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.refreshRate.toDouble()
-        }
     }
 
     private fun enterAndroidFullscreen() {

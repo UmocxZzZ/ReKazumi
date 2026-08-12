@@ -29,3 +29,14 @@ enum FrameInterpolationMode {
     );
   }
 }
+
+double? fixed3xPresentationFps(double sourceFps) {
+  if (!sourceFps.isFinite || sourceFps <= 0) {
+    return null;
+  }
+  final presentationFps = sourceFps * 3;
+  if (presentationFps > 120.5) {
+    return null;
+  }
+  return presentationFps;
+}

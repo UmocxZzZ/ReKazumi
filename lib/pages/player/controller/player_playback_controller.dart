@@ -398,13 +398,6 @@ abstract class _PlayerPlaybackController with Store {
         return await _discardIfNotCurrent(candidate);
       }
 
-      if (frameInterpolationMode.enabled) {
-        await setFrameInterpolation(frameInterpolationMode, player: player);
-        if (!isCurrentPlayer(player)) {
-          return await _discardIfNotCurrent(candidate);
-        }
-      }
-
       bool showPlayerError = GStorage.getSetting(SettingsKeys.showPlayerError);
       player.stream.error.listen((event) {
         if (showPlayerError) {
@@ -439,6 +432,13 @@ abstract class _PlayerPlaybackController with Store {
       );
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
+      }
+
+      if (frameInterpolationMode.enabled) {
+        await setFrameInterpolation(frameInterpolationMode, player: player);
+        if (!isCurrentPlayer(player)) {
+          return await _discardIfNotCurrent(candidate);
+        }
       }
 
       if (cachePolicy.networkForced) {
@@ -525,19 +525,18 @@ abstract class _PlayerPlaybackController with Store {
       if (!Platform.isAndroid) {
         throw UnsupportedError('Adreno AFME is only available on Android');
       }
-      final displayRefreshRate =
-          await PlatformEnvironmentService.getDisplayRefreshRate();
+      final sourceFps = await _readSourceFrameRate(pp, currentPlayer);
       if (!identical(mediaPlayer, currentPlayer)) return false;
-      if (!displayRefreshRate.isFinite || displayRefreshRate < 20) {
-        throw StateError('Android did not report a valid display refresh rate');
+      final presentationFps = fixed3xPresentationFps(sourceFps);
+      if (presentationFps == null) {
+        throw StateError('Unsupported source frame rate: $sourceFps');
       }
 
-      // display-vdrop preserves source/audio speed (speed factor remains 1.0)
-      // while allowing mpv's presentation queue to run at display cadence.
-      // The renderer quantizes that cadence to source, 1/3 and 2/3 only.
+      // Drive mpv at exactly source FPS x3. The physical 120 Hz display only
+      // holds these source/1/3/2/3 phases and never becomes the AFME clock.
       await pp.setProperty(
         'display-fps-override',
-        displayRefreshRate.toStringAsFixed(3),
+        presentationFps.toStringAsFixed(6),
       );
       await pp.setProperty('video-sync', 'display-vdrop');
       await pp.setProperty('tscale', 'oversample');
@@ -546,8 +545,9 @@ abstract class _PlayerPlaybackController with Store {
       await pp.setProperty('interpolation', 'yes');
       frameInterpolationMode = mode;
       KazumiLogger().i(
-        'PlayerController: fixed 3x AFME presentation clock '
-        '${displayRefreshRate.toStringAsFixed(3)} Hz',
+        'PlayerController: fixed 3x AFME source '
+        '${sourceFps.toStringAsFixed(6)} fps, presentation '
+        '${presentationFps.toStringAsFixed(6)} fps',
       );
       return true;
     } catch (error, stackTrace) {
@@ -559,6 +559,29 @@ abstract class _PlayerPlaybackController with Store {
       );
       return false;
     }
+  }
+
+  Future<double> _readSourceFrameRate(
+    NativePlayer player,
+    Player currentPlayer,
+  ) async {
+    for (var attempt = 0; attempt < 40; attempt++) {
+      if (!identical(mediaPlayer, currentPlayer)) {
+        throw StateError('Player was replaced while reading source FPS');
+      }
+      for (final property in const ['container-fps', 'estimated-vf-fps']) {
+        try {
+          final value = double.tryParse(await player.getProperty(property));
+          if (value != null && value.isFinite && value > 0) {
+            return value;
+          }
+        } catch (_) {
+          // The properties are unavailable until mpv has decoded video.
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    throw StateError('mpv did not report the source frame rate');
   }
 
   Future<void> setPlaybackSpeed(double playerSpeed) async {

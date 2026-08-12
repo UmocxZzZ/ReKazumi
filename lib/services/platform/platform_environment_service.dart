@@ -44,17 +44,4 @@ class PlatformEnvironmentService {
     }
   }
 
-  static Future<double> getDisplayRefreshRate() async {
-    if (!Platform.isAndroid) {
-      return 0;
-    }
-    try {
-      final refreshRate =
-          await _intentChannel.invokeMethod<num>('getDisplayRefreshRate');
-      return refreshRate?.toDouble() ?? 0;
-    } on PlatformException catch (e) {
-      KazumiLogger().e("Failed to get display refresh rate: '${e.message}'.");
-      return 0;
-    }
-  }
 }

@@ -31,7 +31,7 @@
 - Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
 - Preserve original frames as the only temporal inputs.
 - Keep `video-sync=display-vdrop`: this enables the presentation queue while mpv keeps the video speed factor at 1.0 and follows the audio/source timeline.
-- Android's mpv OpenGL context does not report `VOCTRL_GET_DISPLAY_FPS`; query the active Android `Display.refreshRate` and set `display-fps-override` before enabling `display-vdrop`, otherwise mpv rejects interpolation with `display_synced=false`.
+- Android's mpv OpenGL context does not report `VOCTRL_GET_DISPLAY_FPS`. After the video opens, read its source FPS from mpv and set `display-fps-override` to exactly source FPS x3 before enabling `display-vdrop`. Never use the physical display refresh rate as the AFME presentation clock.
 - Force the AFME backend to `vo=gpu`, `gpu-api=opengl`, and `gpu-context=android`; `gpu-next` is Vulkan and cannot call the GLES extension.
 - If the extension or compatible texture format is unavailable, hold original frames and report that AFME is unavailable. Never silently fall back to the retired RIFE filter.
 - A crash, incorrect frame, or synchronization hazard takes priority over throughput work.
