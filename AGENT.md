@@ -26,8 +26,8 @@
 
 ## Frame-generation architecture
 
-- Use the two original mpv GPU render surfaces as AFME inputs.
-- Generate both 3x intermediate textures once per original frame pair with scale factors `-2/3` and `-1/3`.
+- Use the two most recent original mpv GPU render surfaces as AFME inputs: previous first, current second.
+- Generate both 3x future textures once per original frame pair with scale factors `+1/3` and `+2/3`, following the extension's intended extrapolation path. Device testing showed the negative interpolation path produced severe temporal oscillation on Adreno 830.
 - Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
 - Preserve original frames as the only temporal inputs.
 - Keep `video-sync=audio` and `display-fps-override=0`. Display-sync was rejected by device testing because a render stall makes mpv catch up and visibly accelerates the media timeline.

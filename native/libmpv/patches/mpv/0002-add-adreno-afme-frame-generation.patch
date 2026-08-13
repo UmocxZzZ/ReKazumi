@@ -81,7 +81,7 @@ index f9649501f..773782a7e 100644
      for (int n = 0; n < p->num_hook_textures; n++)
          ra_tex_free(p->ra, &p->hook_textures[n]);
  
-@@ -3267,6 +3304,218 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
+@@ -3267,6 +3304,219 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
      return true;
  }
  
@@ -269,14 +269,15 @@ index f9649501f..773782a7e 100644
 +    GL *gl = ra_gl_get(p->ra);
 +    while (gl->GetError() != GL_NO_ERROR) {}
 +
-+    // QCOM defines scale relative to the second source. Negative values select
-+    // instants before it: -2/3 is t=1/3 and -1/3 is t=2/3.
++    // QCOM frame extrapolation is designed to predict instants after the
++    // second source. With first=previous and second=current, +1/3 and +2/3
++    // produce the two source-timed presentations after the current frame.
 +    gl->Finish();
 +    p->afme_extrapolate(source_texture[0], source_texture[1],
-+                        output_texture[0], -2.0f / 3.0f);
++                        output_texture[0], 1.0f / 3.0f);
 +    gl->Finish();
 +    p->afme_extrapolate(source_texture[0], source_texture[1],
-+                        output_texture[1], -1.0f / 3.0f);
++                        output_texture[1], 2.0f / 3.0f);
 +    gl->Finish();
 +
 +    GLenum error = gl->GetError();
@@ -300,7 +301,7 @@ index f9649501f..773782a7e 100644
  // Draws an interpolate frame to fbo, based on the frame timing in t
  // flags: bit set of RENDER_FRAME_* flags
  static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-@@ -3312,7 +3561,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3312,7 +3562,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
      bool linear = tscale->conf.kernel.function == SCALER_LINEAR;
      int size;
  
@@ -311,7 +312,7 @@ index f9649501f..773782a7e 100644
          size = 2;
      } else {
          mp_assert(tscale->kernel && !tscale->kernel->polar);
-@@ -3374,11 +3625,22 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3374,11 +3626,22 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          pass_info_reset(p, true);
      pass_describe(p, "interpolation");
      if (!valid || t->still) {
@@ -335,7 +336,7 @@ index f9649501f..773782a7e 100644
          // The scaler code always wants the fcoord to be between 0 and 1,
          // so we try to adjust by using the previous set of N frames instead
          // (which requires some extra checking to make sure it's valid)
-@@ -3389,13 +3651,38 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3389,13 +3652,48 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
              {
                  mix += 1.0;
                  surface_bse = prev;
@@ -350,16 +351,26 @@ index f9649501f..773782a7e 100644
 +        bool used_afme = false;
 +        if (p->opts.adreno_frame_generation) {
 +            int phase = MPCLAMP((int)floor(mix * 3.0 + 1e-7), 0, 2);
-+            struct surface *first = &p->surfaces[afme_first];
-+            struct surface *second = &p->surfaces[surface_wrap(afme_first + 1)];
-+            struct ra_tex *selected = first->tex;
++            struct surface *current = &p->surfaces[afme_first];
++            struct surface *previous =
++                &p->surfaces[surface_wrap(afme_first - 1)];
++            struct ra_tex *selected = current->tex;
 +
-+            bool generated = afme_generate_pair(p, first, second);
++            // The extension's intended real-time path consumes two already
++            // rendered frames in order, then extrapolates after the newer one.
++            // Never feed generated textures back as temporal inputs.
++            bool have_history = previous->id != 0 &&
++                                previous->id + 1 == current->id &&
++                                isfinite(previous->pts) &&
++                                isfinite(current->pts) &&
++                                previous->pts < current->pts;
++            bool generated = have_history &&
++                afme_generate_pair(p, previous, current);
 +            if (phase > 0 && generated)
 +                selected = p->afme_tex[phase - 1];
 +
 +            p->afme_stats_phase[phase]++;
-+            if (selected != first->tex)
++            if (selected != current->tex)
 +                p->afme_stats_generated_present++;
 +            afme_report_stats(p);
 +
@@ -367,7 +378,7 @@ index f9649501f..773782a7e 100644
 +            // holds these textures according to source PTS; it does not cause
 +            // additional generated phases.
 +            pass_read_tex(p, selected);
-+            p->is_interpolated = phase > 0 && selected != first->tex;
++            p->is_interpolated = phase > 0 && selected != current->tex;
 +            used_afme = true;
 +        }
 +
@@ -375,7 +386,7 @@ index f9649501f..773782a7e 100644
              // Oversample uses the frame area as mix ratio, not the vsync
              // position itself
              double vsync_dist = t->vsync_interval / t->ideal_frame_duration,
-@@ -3408,20 +3695,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3408,20 +3706,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          }
  
          // Blend the frames together
@@ -399,7 +410,7 @@ index f9649501f..773782a7e 100644
              struct image img =
                  image_wrap(p->surfaces[surface_wrap(surface_bse+i)].tex,
                             PLANE_RGB, p->components);
-@@ -3434,7 +3721,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3434,7 +3732,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
  
          MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
                   t->ideal_frame_duration, t->vsync_interval, mix);
@@ -409,7 +420,7 @@ index f9649501f..773782a7e 100644
      }
      pass_draw_to_screen(p, fbo, flags);
  
-@@ -3477,14 +3765,34 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
+@@ -3477,14 +3776,34 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
      }
  
      if (has_frame) {
@@ -446,7 +457,7 @@ index f9649501f..773782a7e 100644
          if (interpolate) {
              gl_video_interpolate_frame(p, frame, fbo, flags);
          } else {
-@@ -3887,7 +4195,7 @@ static bool check_dumb_mode(struct gl_video *p)
+@@ -3887,7 +4206,7 @@ static bool check_dumb_mode(struct gl_video *p)
      // otherwise, use auto-detection
      if (o->correct_downscaling || o->linear_downscaling ||
          o->linear_upscaling || o->sigmoid_upscaling || o->interpolation ||
@@ -455,7 +466,7 @@ index f9649501f..773782a7e 100644
          return false;
      // check remaining scalers (tscale is already implicitly excluded above)
      for (int i = 0; i < SCALER_COUNT; i++) {
-@@ -4022,6 +4330,7 @@ static void check_gl_features(struct gl_video *p)
+@@ -4022,6 +4341,7 @@ static void check_gl_features(struct gl_video *p)
              .background_tile_color[0] = p->opts.background_tile_color[0],
              .background_tile_color[1] = p->opts.background_tile_color[1],
              .background_tile_size = p->opts.background_tile_size,
@@ -463,7 +474,7 @@ index f9649501f..773782a7e 100644
              .dither_algo = p->opts.dither_algo,
              .dither_depth = p->opts.dither_depth,
              .dither_size = p->opts.dither_size,
-@@ -4211,6 +4520,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+@@ -4211,6 +4531,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
          .video_eq = mp_csp_equalizer_create(p, g),
          .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
      };
@@ -483,7 +494,7 @@ index f9649501f..773782a7e 100644
      // make sure this variable is initialized to *something*
      p->pass = p->pass_fresh;
      struct gl_video_opts *opts = p->opts_cache->opts;
-@@ -4304,7 +4626,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
+@@ -4304,7 +4637,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
          }
      }
  
