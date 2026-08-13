@@ -619,3 +619,73 @@
   safety gate prevents activation. Only the independently checked local APK is
   currently approved. Push the new JAR hash pin and require the next validation
   run to rebuild after the safe asset publication.
+- Created commit `841832d` (`build: pin fail-closed libmpv runtime`) with only
+  the verified SHA-256 pin and accumulated journal. Generated caches, APKs,
+  ignored registrant workaround, and `pubspec.lock` were excluded. Push this
+  commit through proxy and treat its new validation APK as authoritative only
+  after CI succeeds against the already-published safe asset.
+- Push of `841832d` succeeded and started final validation.
+
+### Replacement architecture research (2026-08-13)
+
+- Strict GitHub repository searches for exact phrases `frame generation
+  android vulkan`, `frame interpolation android vulkan`, and
+  `optical flow android vulkan` returned no repositories. Broader searches
+  found `FrankBarretta/LSFG-Android` as the only demonstrated Android/Vulkan
+  frame-generation application; `The412Banner/LLS` is a near-identical mirror,
+  not an independent implementation. General frame-interpolation results were
+  desktop/research projects or ncnn model inference.
+- Fixed reference revisions: LSFG-Android
+  `da867e918d65289ceb38f75e354b197dc08ffd29`, standalone GPL application
+  `b84754199823615d32d65fe33ea59481dca88dcf`, MIT Android lsfg-vk branch
+  `3e89e5439a98f55d5acb003d20039426ab24e69c`, and HopperRender
+  `0d586cd4a78f2905f65b82fb6ac87e2829477479`.
+- LSFG-Android proves AHardwareBuffer sharing, explicit Vulkan ownership,
+  bounded queues, vsync pacing, device-lost bypass, and real/total FPS
+  instrumentation on Adreno 7xx+. Its capture/overlay path is unnecessary for
+  ReKazumi because the player owns the decoded frames and final surface.
+- License check used actual LICENSE files, not only repository badges. The
+  standalone Android application and ReKazumi are GPL-3.0 compatible; the
+  Android AHB branch is MIT. The monorepo app subtree has additional
+  non-commercial restrictions and must not be copied. All LSFG variants still
+  require shaders extracted from a user-owned `Lossless.dll`; those assets
+  cannot be bundled or downloaded by ReKazumi.
+- HopperRender provides a model-free hierarchical block-search plus
+  bidirectional warp/blend design, but is desktop OpenCL and not an Android
+  performance proof. A tree-list `gh api` command for that repository failed
+  because its jq expression was parsed incorrectly (`function not defined:
+  blob/0`); README and repository metadata reads succeeded, so no conclusion
+  depends on the failed tree listing.
+- Added `docs/frame-generation-architecture.md`. It chooses the proven
+  LSFG-style Android/Vulkan transport, synchronization, pacing, metrics, and
+  fail-closed structure while explicitly leaving the algorithm decision gated:
+  user-supplied LSFG shaders versus a new fully open Vulkan optical-flow
+  implementation. No proprietary shader, model, or external repository code
+  was added to ReKazumi.
+- Final hash-pin validation run `31691548048` succeeded at commit
+  `841832d554ade10aa9a17928e4d05fdf32c1efe9`: formatting, full Flutter tests,
+  full analysis, arm64 APK build, native-library package check, and artifact
+  upload all passed. Artifact `rekazumi-afme-android-arm64` has id 9177853188
+  and size 48,682,947 bytes. Download it into a new directory and independently
+  verify its APK/package metadata and embedded arm64 `libmpv.so` hash before
+  approving it; the historical artifact name is not evidence that AFME is
+  active.
+- First `gh run download` attempt for the 48.7 MB final artifact exceeded the
+  180-second local command timeout and was terminated without output. Inspect
+  the new destination read-only before retrying; do not assume a partial file
+  is valid and do not overwrite a complete APK without checking its size/hash.
+- The timed-out `gh` process remained alive with negligible CPU and no visible
+  destination file. The first non-escalated exact-PID `Stop-Process` reported
+  `STOP_FAILED`; by the subsequent approved inspection the process had exited
+  and the directory was still empty. No complete or partial APK was accepted.
+- Strengthened CI instead of relying on an unreliable artifact download:
+  renamed the validation workflow/artifact to `safe` terminology, extracts the
+  packaged arm64 `libmpv.so`, requires exact SHA-256
+  `7deb3537...ab095a`, requires the fail-closed diagnostic, and rejects the old
+  extension-detected diagnostic. This makes CI itself prove the APK embeds the
+  independently verified safe binary before uploading it.
+- Created commit `ab4eaba` (`docs: define safe Vulkan frame generation path`)
+  containing the architecture document, renamed/strengthened validation
+  workflow, and journal. Amend this operation record into that same unpushed
+  commit, then push once; generated directories and `pubspec.lock` remain
+  excluded.
