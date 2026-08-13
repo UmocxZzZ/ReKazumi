@@ -28,13 +28,14 @@
 
 - Use the two most recent original mpv GPU render surfaces as AFME inputs: previous first, current second.
 - Generate the 3x future textures with scale factors `+1/3` and `+2/3`, following the extension's intended extrapolation path. Device testing showed the negative interpolation path produced severe temporal oscillation on Adreno 830.
-- Submit at most one AFME job per presentation frame and sample that output in the same ordered GLES command stream, matching Qualcomm's reference cadence. Do not batch both phases or put `glFinish()` around the extension call: that positive-path combination caused an Adreno 830 GPU/SurfaceFlinger hang and SystemUI restart.
+- Keep mpv and Anime4K render surfaces in FP16, but convert the two AFME inputs to dedicated full-resolution RGB8 (RGBA8 fallback) GPU textures. Produce AFME outputs in that same fixed-point format. Qualcomm's reference sample uses RGB8; positive extrapolation from RGBA16F caused repeatable Adreno 830 GPU/SurfaceFlinger hangs even after batching and `glFinish()` were removed.
+- Submit at most one AFME job per presentation frame and sample that output in the same ordered GLES command stream, matching Qualcomm's reference cadence. Do not batch both phases or put `glFinish()` around the extension call.
 - Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
 - Preserve original frames as the only temporal inputs.
 - Keep `video-sync=audio` and `display-fps-override=0`. Display-sync was rejected by device testing because a render stall makes mpv catch up and visibly accelerates the media timeline.
 - Drive the fixed original/1/3/2/3 phases inside the VO from each source frame's realtime PTS and duration. Generated phases that miss their deadline must be dropped rather than submitted in a catch-up burst.
 - Request at least one future original frame from mpv without enabling its temporal interpolation. The renderer uses only that original pair as AFME inputs.
-- Treat AFME as asynchronous on Adreno. Preserve its input and output textures until ordered GLES sampling is complete; rely on command ordering rather than blocking the display stack with `glFinish()`.
+- Treat AFME as asynchronous on Adreno. Preserve its fixed-point input and output textures until ordered GLES sampling is complete; rely on command ordering rather than blocking the display stack with `glFinish()`.
 - Force the AFME backend to `vo=gpu`, `gpu-api=opengl`, and `gpu-context=android`; `gpu-next` is Vulkan and cannot call the GLES extension.
 - If the extension or compatible texture format is unavailable, hold original frames and report that AFME is unavailable. Never silently fall back to the retired RIFE filter.
 - A crash, incorrect frame, or synchronization hazard takes priority over throughput work.
