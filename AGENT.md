@@ -689,3 +689,26 @@
   workflow, and journal. Amend this operation record into that same unpushed
   commit, then push once; generated directories and `pubspec.lock` remain
   excluded.
+- The amend produced final commit `6f12da5` and push succeeded. Validation run
+  `31692783109` completed successfully at
+  `6f12da5a3a657727cc6a575b6e715a0e9dc90347`: formatting, full tests, full
+  analysis, Android arm64 APK build, strengthened native-library verification,
+  and upload all passed. The exact embedded arm64 `libmpv.so` SHA-256 and
+  fail-closed marker therefore passed in CI before artifact upload. Final
+  artifact is `rekazumi-safe-android-arm64`, id 9178345124, size 48,682,935
+  bytes. Historical workflow display text shown by GitHub may remain cached
+  from the default branch, but the executed branch step contains the safe
+  binary checks.
+- Safe rollback outcome is complete. Approved local deliverable remains
+  `device-build/rekazumi-safe-4905eb9/ReKazumi-safe-4905eb9-universal.apk`
+  (SHA-256 `44c6c0f0...411285c`); approved CI artifact is the hash-checked
+  `rekazumi-safe-android-arm64` from run 31692783109. Neither APK was installed
+  during rollback. Future work starts from
+  `docs/frame-generation-architecture.md`; no QCOM GLES extension may be
+  re-enabled.
+- The final journal commit had pre-amend id `bbaff73` (`docs: record safe
+  runtime verification`). Its operation record was amended into the same
+  unpushed commit; use Git history for the resulting id instead of embedding a
+  self-changing hash here. AGENT-only changes do not match the Android
+  validation workflow paths, so this documentation push must not start another
+  APK build.
