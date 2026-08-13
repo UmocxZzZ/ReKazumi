@@ -158,6 +158,87 @@
   its README; commit and push the pin. Then perform an Android package build
   through the proxy, without installing it, and verify the APK's embedded
   `libmpv.so` before any device action.
+- Staged only the journal, local Android runtime README, and Gradle hash pin;
+  commit `f1c75a3` (`build: pin motion-estimation libmpv runtime`) was created
+  and pushed through `mixed:10808`. Unrelated `pubspec.lock`, `device-build/`,
+  and `work/` remained excluded. Planned build: use the existing Flutter
+  release path for arm64, with proxy variables set for dependency retrieval;
+  do not install automatically. If compilation succeeds, copy the APK to a new
+  commit-specific directory and inspect its package id, native library, unsafe
+  symbol absence, and SHA-256.
+- The combined Flutter-version/output/status preflight command timed out after
+  about 30 seconds without returning output. It did not start the requested APK
+  build and must not be counted as a build result. Planned recovery: confirm no
+  stale Flutter/Gradle process and no unexpected source change with separate
+  lightweight checks, then run the arm64 release build with `--no-pub` and a
+  realistic long timeout.
+- No stale Flutter process or unexpected source edit was found; the only Java
+  process predated this operation. `flutter build apk --release
+  --target-platform android-arm64 --no-pub` then succeeded in 92.1 seconds and
+  produced a 47.2 MB `build/app/outputs/flutter-apk/app-release.apk`. Gradle
+  warned that the app uses NDK 27.2 while the `jni` plugin requests NDK 28.2
+  (and several plugins request NDK 27.0); it still completed successfully.
+  Treat this as technical debt, not as a failed build, and do not change NDK
+  versions during this frame-generation validation. Planned next operation:
+  copy the APK to a new `device-build/ame-f1c75a3` directory, compute SHA-256,
+  inspect package/application identity and embedded arm64 `libmpv.so`, and
+  prove the unsafe extension strings are absent. Do not install yet.
+- Copied the APK to
+  `device-build/ame-f1c75a3/ReKazumi-ame-f1c75a3-local.apk`; it is 49,488,582
+  bytes with SHA-256
+  `3da4d0332d8e8f7423fd7075c01d85819d2d4d649abcdff602ee4325b089e06e`.
+  The combined check command then returned nonzero because neither `aapt` nor
+  `apkanalyzer` was on the current PATH. Copying and hashing had already
+  succeeded; package inspection did not run. Planned recovery: locate the
+  configured Android SDK build-tools explicitly, then inspect this same APK;
+  do not rebuild or install because of a PATH-only diagnostic failure.
+- The first SDK-tool lookup incorrectly inferred the SDK root from standalone
+  `C:\platform-tools\adb.exe`, then timed out after 30 seconds without finding
+  build tools. This was another read-only diagnostic mistake. Do not recursively
+  scan from `C:\`; check only standard Android SDK locations and Flutter's
+  configured SDK metadata.
+- Standard SDK inspection found Android SDK build-tools 37.0.0 and the latest
+  command-line tools. `aapt` and `apkanalyzer` verified the candidate APK has
+  package id `com.predidit.rekazumi`, application label `ReKazumi`, version
+  2.2.7 (code 20207), and an arm64 native ABI. Its embedded arm64 `libmpv.so`
+  is 21,735,648 bytes and hashes to
+  `733fd76df03a7d1ff47b46d5f6f9719985227c0e24699907d71ce43ccceca0ec`,
+  exactly matching the verified native JAR's `libmpv.so`. Binary inspection
+  again found only `GL_QCOM_motion_estimation` / `glTexEstimateMotionQCOM` and
+  no QCOM frame-extrapolation string. Planned next operation: inspect the APK
+  entry list for retired RIFE/model payloads and run focused repository
+  validation before deciding whether this APK is eligible for installation.
+- The first APK payload search was too broad: generic `.bin` and `model`
+  patterns matched Flutter's `AssetManifest.bin`, Kotlin metadata, and Apache
+  Tika's unrelated `tika-example.nnmodel`. These are not RIFE artifacts, so the
+  broad result is not a failure. The same command mistakenly passed
+  PowerShell's `-ErrorAction` to `rg`, which rejected it as an encoding flag.
+  Planned correction: match only exact retired RIFE/ncnn library, directory,
+  and model-name patterns, and run repository test discovery as a separate
+  valid command.
+- The corrected exact-name scan found no retired RIFE/ncnn libraries,
+  directories, or named model files in the APK. Test discovery found the
+  focused `test/frame_interpolation_mode_test.dart` and the Android validation
+  workflow. `rg` returned nonzero only because the repository has no
+  `integration_test` directory; this is not a test failure. Planned next
+  operation: run the focused Flutter test and static analysis of the changed
+  Dart/Gradle integration surface without modifying dependencies.
+- `flutter test --no-pub test/frame_interpolation_mode_test.dart` completed in
+  13.7 seconds with both tests passing: fixed 3x remains opt-in, and unknown
+  persisted values safely disable interpolation. Planned next operation: run
+  Flutter static analysis; record pre-existing warnings separately from any new
+  error, and do not install if analysis reports an error in the frame-generation
+  path.
+- `flutter analyze --no-pub` completed in 88.6 seconds with exit code 1 because
+  it reported 18 `info`-severity issues: existing private-type API notices,
+  missing type inference, production `print` calls, and deprecated Flutter
+  theme properties. It reported no error or warning and nothing in the
+  frame-generation path. Conclusion: analysis is not clean, but it found no
+  blocker for this candidate. Do not misreport this as zero issues. Planned
+  next operation: commit/push the accumulated journal only, then install the
+  already-verified APK with adb replacement semantics. Do not auto-launch or
+  auto-play; confirm installation identity and wait for manual user playback
+  while collecting logs.
 
 ### GitHub reference review
 
