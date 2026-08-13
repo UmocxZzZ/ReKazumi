@@ -239,6 +239,59 @@
   already-verified APK with adb replacement semantics. Do not auto-launch or
   auto-play; confirm installation identity and wait for manual user playback
   while collecting logs.
+- Committed the 81-line accumulated journal as `a8f6c03` (`docs: record
+  frame-generation validation journal`) and pushed it through `mixed:10808`;
+  unrelated files remained excluded. The exact next device operation is
+  `adb install -r` of APK SHA-256 `3da4d033...89e06e` to connected device
+  `6cb239de`. Safety boundary: installation only, then verify package metadata;
+  do not launch, navigate, or start video automatically.
+- `adb -s 6cb239de install -r` of the verified candidate completed successfully
+  (`Performing Streamed Install`, `Success`). The app was not launched. Planned
+  read-only checks: query installed package version/path and process state to
+  confirm identity and prove it is not running; then wait for the user to open
+  the app and start playback manually before log capture.
+- Installed-package inspection confirmed code path under
+  `com.predidit.rekazumi`, primary ABI arm64-v8a, version code 20207, and version
+  name 2.2.7. The following `pidof com.predidit.rekazumi` produced no PID and
+  therefore made the combined shell command return exit code 1; this is the
+  expected proof that ReKazumi was not running, not an installation failure.
+  Current state: candidate installed and stopped. Required next event is manual
+  user launch and playback; do not question the selected 3x option. Once the
+  user reports playback started, collect mpv counters plus SurfaceFlinger,
+  SystemUI, GPU, and process-health logs without changing settings mid-test.
+
+### Motion-estimation device failure (2026-08-13)
+
+- User manually launched the installed motion-estimation candidate and started
+  playback. Observed result: playback froze, the display then became corrupted
+  (花屏), and the app/system presentation crashed. This immediately invalidates
+  `GL_QCOM_motion_estimation` as a safe active backend on the reference Adreno
+  830 driver; successful compilation and correct extension advertisement did
+  not prove runtime safety.
+- Emergency operation: ran `adb shell am force-stop
+  com.predidit.rekazumi`, then queried `pidof`. No PID was returned; the
+  combined command exit code 1 comes from expected `pidof` absence and confirms
+  ReKazumi is stopped. Do not restart, reinstall, or retry either QCOM motion
+  extension during evidence collection.
+- Planned read-only evidence collection: snapshot current clock/uptime, Android
+  crash buffers, recent main/system log lines for ReKazumi, Adreno/GPU,
+  SurfaceFlinger `SF Hang`, SystemUI restarts, low-memory kills, and display
+  corruption; then inspect package/process state. No settings, refresh rate,
+  playback option, or app data may be changed.
+- First evidence command had two Android-shell compatibility mistakes: the
+  device's `date` rejected the supplied format string, and `logcat -T` rejected
+  the human phrase `30 minutes ago`. Only `uptime` succeeded, reporting 8 days
+  22:16 uptime and high load averages 17.15/15.82/15.34. No valid filtered crash
+  window was obtained from that attempt. Retry uses plain `date`, fixed recent
+  line counts, and the same read-only filters.
+- Compatible retry succeeded at device time 17:55:30. It captured the relevant
+  transition near 17:54, including ReKazumi PID 24168 and subsequent display
+  transitions into DOZE/OFF around 17:54:35-17:54:37. SystemUI was still PID
+  31144 afterward, so this snapshot does not show a SystemUI restart. The
+  filtered output was nevertheless dominated by display/WindowManager noise
+  and truncated, so it is insufficient to determine the actual crash cause.
+  Planned refinement: query exact PID/fatal/GPU/SF-Hang patterns with a narrow
+  result limit and read Android `activity exit-info` for the package.
 
 ### GitHub reference review
 
@@ -338,3 +391,107 @@
 - Preserve unrelated user changes and generated device artifacts.
 - Keep architecture changes, model-distribution changes, and small CI fixes in focused commits.
 - Do not publish or install an APK until its native runtime version and hash are known.
+
+### Motion-estimation failure evidence and permanent safety decision (2026-08-13)
+
+- Exact Android `ApplicationExitInfo` shows ReKazumi PID 24168 exited at
+  17:54:34.657 with reason `USER REQUESTED`, subreason `FORCE STOP`, and
+  description `stop com.predidit.rekazumi due to from pid 11521`. This is the
+  diagnostic `adb am force-stop` issued after the user reported the freeze and
+  corruption; it is not evidence of an autonomous application crash.
+- The matching log window shows the app starting at 17:53:25.317, the diagnostic
+  force-stop and SIGKILL at 17:54:34.655, then client-surface teardown. No Java
+  fatal exception, native tombstone, OOM kill, SurfaceFlinger restart, or
+  SystemUI restart was captured before that forced stop. Exit RSS was about
+  506 MB. Absence of a tombstone does not contradict the observed graphics
+  failure because a wedged or corrupted GPU/display path can leave the process
+  alive until it is externally stopped.
+- User-observed outcome remains authoritative for safety: playback froze, the
+  image became corrupted, and the app/display became unusable. The active
+  `GL_QCOM_motion_estimation` experiment is therefore rejected even though the
+  process did not autonomously terminate in Android's exit record.
+- Both tested proprietary QCOM GLES routes are now permanently prohibited on
+  the OPlus 13T / Adreno 830 reference device:
+  `GL_QCOM_frame_extrapolation` caused repeatable display-stack hangs and
+  SystemUI restarts; `GL_QCOM_motion_estimation` caused a freeze followed by
+  visible frame corruption. Do not retry either extension, do not reinterpret
+  the missing tombstone as permission to retry, and do not ship either path.
+- This decision supersedes the earlier playback requirement that selected
+  `GL_QCOM_motion_estimation` as the implementation. The product requirement
+  remains full-quality 3x frame generation, but the implementation must use a
+  proven, explicitly synchronized Android/Vulkan frame-generation architecture
+  or another safe backend. Until that exists, fail closed to original-frame
+  playback and report frame generation unavailable.
+- Immediate safety work: keep the installed package stopped; change the native
+  runtime so the QCOM entry points cannot be called; build and publish a safe
+  replacement for the currently pinned experimental runtime before any further
+  device playback test. No reinstall or playback retry is authorized during
+  this rollback.
+- Safety implementation intent: remove QCOM extension discovery from native
+  initialization so its function pointer remains null, gate the VO's 3x phase
+  scheduler on an actually available safe backend, and reset any persisted
+  Flutter 3x selection to Off before player construction. The settings page
+  must refuse re-enabling the rejected backend and explain that it is disabled
+  after device instability. This preserves ordinary source-rate playback and
+  Anime4K while making the dangerous path unreachable at both UI and native
+  layers.
+- Patch-integrity correction: the first fail-closed edit added two wrapped
+  condition lines in `gl_video_configure_queue` but initially left that unified
+  diff hunk's new-line count at 11. Corrected it to 13 before attempting any
+  native build. This was a source-patch metadata mistake, not a device action.
+- First syntax-only `git apply --numstat` still rejected the patch at the next
+  hunk because the initialization hunk count omitted its added blank line. The
+  correct new count is 12, not 11. Corrected it and repeated syntax validation;
+  no build, publication, installation, or device playback occurred.
+- After both metadata corrections, syntax-only parsing succeeded and reported
+  the expected four patched mpv files. Planned validation now clones the pinned
+  local clean mpv base into `device-build/mpv-failclosed-patch-check` without
+  hardlinks and runs `git apply --check` there. This is an isolated, disposable
+  local validation copy; it does not change the connected device or the source
+  repository's unrelated files.
+- The first isolated-clone validation did not start: Git treated the local
+  source repository's `.git` directory as a second dubious-ownership path even
+  though the worktree path was allowed command-locally. The clone destination
+  was not created, so the following apply-check also failed because it had no
+  directory. Retry supplies command-local safe-directory entries for both the
+  worktree and its `.git`; no global Git configuration is changed.
+- The isolated clean-base clone and `git apply --check` succeeded at pinned mpv
+  commit `32a164cc017acab50389f2194f720ccfd0b01a28`. Updated native/plugin
+  documentation and workflow labels so they no longer claim the rejected QCOM
+  backend is active. Artifact filenames and release tag remain stable solely to
+  replace the dangerous pinned asset atomically after the safe build completes.
+- Planned local verification: apply the patch inside the isolated clean clone,
+  confirm QCOM function discovery is absent and the fail-closed queue gate is
+  present, then format only the three changed Dart files and run focused Flutter
+  analysis/tests. These checks do not access the phone.
+- The user interrupted the combined local verification while it was running.
+  Follow-up inspection found no remaining Dart, Flutter, or Git process. The
+  isolated mpv clone had already accepted the patch, and its source contains
+  the fail-closed warning and guarded scheduler; the only
+  `glTexEstimateMotionQCOM` text left is an unavailable diagnostic inside an
+  unreachable path, not extension discovery. Main-repository `git diff --check`
+  passes. Resume formatting and tests as separate bounded commands so their
+  completion is unambiguous.
+- Standalone `dart format` produced no output for more than 60 seconds and was
+  terminated. No source error was reported, and no device action occurred.
+  Before retrying, inspect which Dart executable is being resolved and use the
+  repository's Flutter SDK toolchain explicitly; do not leave a hung formatter
+  running.
+- Running the same formatter with permission to use the external Flutter SDK
+  completed in 4.3 seconds; all three files were already formatted. The earlier
+  hang was therefore a tooling/sandbox execution issue, not malformed Dart.
+- Centralized safety availability in `FrameInterpolationMode.available` instead
+  of duplicating the rejected-backend identity in settings and player setup.
+  Added a focused test proving Off remains available while the stored 3x mode
+  is recognized but unavailable. This keeps migration deterministic and makes a
+  future backend re-enable an explicit code decision.
+- Verification results: formatting completed; focused Flutter tests passed 3/3,
+  including persisted-value fallback and rejected-backend availability; focused
+  static analysis of the three production files plus the test reported no
+  issues. `git diff --check` remains clean.
+- Planned publication sequence: commit only the fail-closed source, docs,
+  workflow, test, and this journal (exclude the user's unrelated
+  `pubspec.lock` and all `device-build/`/`work/` artifacts); push the branch to
+  build a safe arm64 JAR; publish it over the experimental release asset; then
+  pin its new SHA-256 in a separate commit. Do not install an APK during this
+  sequence.

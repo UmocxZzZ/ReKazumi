@@ -6,8 +6,8 @@ enum FrameInterpolationMode {
   ),
   anime3x(
     storageValue: 1,
-    label: '动漫 3×（Adreno AFME）',
-    description: '硬件生成 1/3、2/3 两张中间帧；120 Hz 仅负责呈现',
+    label: '动漫 3×（暂不可用）',
+    description: 'QCOM 驱动路径已因实机卡死与花屏停用，等待安全后端',
   );
 
   const FrameInterpolationMode({
@@ -21,6 +21,11 @@ enum FrameInterpolationMode {
   final String description;
 
   bool get enabled => this != FrameInterpolationMode.off;
+
+  bool get available => switch (this) {
+        FrameInterpolationMode.off => true,
+        FrameInterpolationMode.anime3x => false,
+      };
 
   static FrameInterpolationMode fromStorageValue(int value) {
     return FrameInterpolationMode.values.firstWhere(

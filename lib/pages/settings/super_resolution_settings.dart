@@ -52,6 +52,16 @@ class _SuperResolutionSettingsState extends State<SuperResolutionSettings> {
       return;
     }
 
+    if (!mode.available) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('3× 插帧已因实机 GPU 卡死与花屏暂时禁用'),
+        ),
+      );
+      return;
+    }
+
     if (!Platform.isAndroid) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

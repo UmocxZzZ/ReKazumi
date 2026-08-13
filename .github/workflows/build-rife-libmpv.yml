@@ -1,4 +1,4 @@
-name: Build Adreno AFME libmpv (arm64)
+name: Build ReKazumi safe libmpv (arm64)
 
 on:
   workflow_dispatch:
@@ -68,7 +68,7 @@ jobs:
           chmod +x /tmp/libmpv-build/buildscripts/include/download-sdk-debian.sh
           chmod +x native/libmpv/build_arm64.sh
 
-      - name: Build arm64 libmpv with Adreno AFME renderer
+      - name: Build arm64 fail-closed libmpv runtime
         run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
 
       - name: Upload libmpv artifact
@@ -83,7 +83,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: afme-runtime-v1
-          name: ReKazumi Adreno AFME runtime v1
+          name: ReKazumi safe arm64 runtime v1
           target_commitish: ${{ github.sha }}
           prerelease: true
           files: |

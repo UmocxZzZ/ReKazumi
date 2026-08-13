@@ -248,6 +248,18 @@ abstract class _PlayerPlaybackController with Store {
     frameInterpolationMode = FrameInterpolationMode.fromStorageValue(
       storedFrameInterpolationMode,
     );
+    if (frameInterpolationMode.enabled && !frameInterpolationMode.available) {
+      await GStorage.putSetting<int>(
+        SettingsKeys.defaultFrameInterpolationMode,
+        FrameInterpolationMode.off.storageValue,
+      );
+      frameInterpolationMode = FrameInterpolationMode.off;
+      KazumiLogger().w(
+        'PlayerController: disabled persisted 3x frame generation after '
+        'device-level GPU instability; using original-frame playback',
+        forceLog: true,
+      );
+    }
     KazumiLogger().i(
       'PlayerController: frame interpolation setting '
       'stored=$storedFrameInterpolationMode resolved=${frameInterpolationMode.name}',

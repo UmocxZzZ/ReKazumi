@@ -21,4 +21,10 @@ void main() {
       FrameInterpolationMode.off,
     );
   });
+
+  test('rejected QCOM backend is unavailable while Off remains usable', () {
+    expect(FrameInterpolationMode.off.available, isTrue);
+    expect(FrameInterpolationMode.anime3x.enabled, isTrue);
+    expect(FrameInterpolationMode.anime3x.available, isFalse);
+  });
 }
