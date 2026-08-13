@@ -1,5 +1,135 @@
 # ReKazumi Agent Guide
 
+## Mandatory engineering journal
+
+- User directive (2026-08-13, permanent): record every material operation,
+  mistake, failed attempt, experiment, observed result, and resulting decision
+  in this file. This directive itself must remain in `AGENT.md` and must not be
+  removed or weakened.
+- Before a risky device, playback, native-runtime, timing, or GPU change,
+  append the intended operation and safety boundary to the journal below.
+  After the operation, append the actual result, including failures. Never
+  rewrite a failed experiment as if it succeeded.
+- For routine read-only inspection, related commands may be grouped into one
+  journal entry, but their conclusions and any change of direction must still
+  be recorded. Build, install, launch, playback, adb, GPU API, model, quality,
+  package, Git, and release operations are always material.
+- Preserve prior entries. Correct an inaccurate entry by adding a dated
+  correction instead of deleting the historical record.
+
+## Engineering journal
+
+### Baseline and retired RIFE path
+
+- Forked the upstream project as ReKazumi and checked it out at
+  `C:\ReKazumi`. Changed the Android application id to
+  `com.predidit.rekazumi` and the application name to `ReKazumi`.
+- Initial RIFE/ncnn playback integration performed inference outside mpv's
+  GPU presentation architecture. It also treated model retrieval as a runtime
+  concern. Device measurement at 1080p was about 724 ms per frame pair, so
+  playback slowed dramatically. Conclusion: retire this path; a model download
+  is not a playback architecture and must not be reintroduced silently.
+- CPU frequency around 384 MHz was initially suspected from telemetry. This
+  was a diagnostic mistake: the measured pipeline latency and data movement,
+  not the reported CPU frequency, explained the slow playback. Architecture
+  must be measured before reducing quality.
+
+### Source-timed mpv presentation work
+
+- Moved fixed 3x phase scheduling into mpv's VO and kept audio/source PTS as
+  the master clock. Disabled display-sync catch-up because a rendering stall
+  made the media timeline visibly accelerate afterward.
+- Added live counters. One device run reported about `71.9 fps` with phases
+  `24/24/24`, 48 generated presentations, and 24 generated pairs per second.
+  This proved the 3x scheduler was active; it did not prove generated image
+  quality or display-stack safety.
+- A negative `GL_QCOM_frame_extrapolation` experiment used the previous and
+  current originals with scale factors `-2/3` and `-1/3`. It did not hang the
+  display stack and achieved the expected counters, but the image oscillated
+  violently. Later architecture review found the main timing mistake: those
+  previous-to-current intermediates were presented after the current frame,
+  so the displayed sequence moved backward in time twice per source frame.
+
+### Unsafe QCOM frame-extrapolation experiments
+
+- Tested positive `glExtrapolateTex2DQCOM` with full-resolution FP16 sources,
+  two generated phases, and blocking `glFinish()` synchronization. Result:
+  repeatable phone/display freeze, audio continued, then SystemUI/display
+  recovery or lock-screen transition. Do not retry.
+- Removed batching and blocking finishes, submitting only one positive job per
+  presentation frame. FP16 still caused the same SurfaceFlinger/SystemUI hang.
+  Conclusion: neither batching nor `glFinish()` was the sole cause.
+- Converted only the extension boundary to dedicated full-resolution RGB8,
+  matching Qualcomm's public sample texture format, while keeping the main
+  surfaces FP16. The installed artifact was
+  `device-build/afme-rgb8-136cf8a/ReKazumi-afme-rgb8-136cf8a-local.apk`
+  (APK SHA-256
+  `f9cf1df6b13808622b36d4d21158c774714720dd8e46d630518596fd8d45b377`).
+  Result: the phone froze again during playback.
+- Crash-window inspection showed no ReKazumi Java/native tombstone. Instead,
+  SystemUI died, the system emitted two `SF Hang` multimedia reports, and
+  SystemUI restarted more than once while ReKazumi/audio remained alive.
+  Conclusion: process survival is not safety; every tested positive
+  frame-extrapolation route wedges the display stack on this Adreno 830 driver.
+  ReKazumi was force-stopped and no equivalent build may be installed again.
+
+### Motion-estimation replacement (current)
+
+- Read the Khronos specifications for `GL_QCOM_frame_extrapolation` and
+  `GL_QCOM_motion_estimation`. The former produces a full extrapolated frame;
+  the latter accepts block-aligned R8 luma inputs and writes ordinary RGBA16F
+  motion vectors for application shaders.
+- Read the connected OPlus 13T SurfaceFlinger GLES capability report. It
+  advertises both extensions on Adreno 830. This was read-only; the unsafe app
+  remained stopped.
+- Replaced the unbuilt working implementation with current-to-next original
+  pairing, bidirectional hardware motion estimation, full-resolution GLES
+  inverse warping, and forward/backward consistency weights. This removes all
+  runtime calls to `glExtrapolateTex2DQCOM`; build and device validation are
+  still pending and must be recorded separately.
+- Planned next operation: run patch-application and native compile validation
+  in GitHub Actions before producing an APK. Do not install anything if the
+  native compile, symbol inspection, runtime hash pin, or APK packaging check
+  fails. A successful build will still not authorize automatic playback;
+  installation and launch must be recorded, then wait for the user to start
+  video manually while system and mpv logs are collected.
+
+### GitHub reference review
+
+- Searched GitHub for existing Android and mpv frame-generation projects.
+  `FrankBarretta/LSFG-Android` is a working Android port verified by its authors
+  on Adreno 7xx-class devices and newer. Useful architecture lessons are:
+  Android `AHardwareBuffer` GPU sharing, explicit image synchronization,
+  duplicate-frame dropping before frame generation, GPU blitting instead of
+  CPU copies, bounded queues, vsync pacing with slack, and visible real/total
+  FPS diagnostics.
+- LSFG-Android captures other apps with MediaProjection and overlays a Vulkan
+  swapchain, which would add unnecessary capture latency inside ReKazumi. Its
+  LSFG shaders come from a user-supplied purchased `Lossless.dll`, and the app
+  repository has a restrictive custom license. Do not copy or redistribute
+  those shaders/code; borrow only general architecture ideas permitted by the
+  license.
+- Inspected LSFG-Android commit `b84754199823615d32d65fe33ea59481dca88dcf`
+  read-only. Its render loop specifically warns that posting twice into one
+  vsync slot can stall SurfaceFlinger, bounds its pending-frame queue and drops
+  stale work, keeps per-swapchain-image synchronization objects, avoids
+  reconfiguring `ANativeWindow` geometry every frame, and automatically
+  bypasses generation after a Vulkan device-lost result. Applied conclusion to
+  ReKazumi: generate only into offscreen textures, make exactly one final mpv
+  screen post per presentation, retain textures until consumption, drop late
+  phases instead of bursting, and fail closed to the original frame on any GL
+  error. AHardwareBuffer import is unnecessary inside ReKazumi because decode,
+  Anime4K, motion analysis, synthesis, and presentation already share mpv's
+  GLES context.
+- `HopperLogger/mpv-frame-interpolator` confirms the relevant algorithm shape:
+  calculate motion between an exact source pair, warp both directions, blend
+  them, and keep optical-flow analysis resolution independent from output
+  resolution. It is desktop OpenCL, not directly reusable on Android.
+- `nihui/rife-ncnn-vulkan` is a proven interpolation engine but remains model
+  inference; the previously measured Android runtime is unsuitable here.
+  Tencent ncnn's newer Android-HardwareBuffer import path is useful evidence
+  for zero-copy Vulkan integration but does not remove RIFE inference cost.
+
 ## Product identity
 
 - Repository and application name: ReKazumi.
@@ -11,7 +141,7 @@
 
 - Keep source timing unchanged. Do not convert 23.976 fps to 24 fps and do not alter playback speed.
 - Frame generation is fixed at 3x: generate only `t=1/3` and `t=2/3` from two original frames.
-- Use Qualcomm Adreno Frame Motion Engine (`GL_QCOM_frame_extrapolation`) in the mpv OpenGL ES presentation path on supported devices.
+- Use Qualcomm's hardware motion estimator (`GL_QCOM_motion_estimation`) in the mpv OpenGL ES presentation path on supported devices, then synthesize intermediate frames in an ordinary GLES shader.
 - Never recursively use generated frames as temporal inputs.
 - Keep temporal interpolation independent from the display refresh rate. A 120 Hz display must not cause 5x interpolation.
 - Duplicate frames and scene cuts may bypass inference, but ordinary motion must retain the requested full-quality interpolation.
@@ -20,24 +150,25 @@
 ## Quality policy
 
 - Architecture and data movement must be optimized before considering resolution reductions.
-- AFME consumes and produces GPU-resident OpenGL textures; do not add CPU readback or ncnn inference to the active path.
+- Motion estimation and synthesis consume and produce GPU-resident OpenGL textures; do not add CPU readback or ncnn inference to the active path.
 - Do not lower interpolation quality, output resolution, color precision, or interpolation coverage without explicit user approval.
 - Performance fixes must be measured instead of inferred from CPU frequency alone.
 
 ## Frame-generation architecture
 
-- Use the two most recent original mpv GPU render surfaces as AFME inputs: previous first, current second.
-- Generate the 3x future textures with scale factors `+1/3` and `+2/3`, following the extension's intended extrapolation path. Device testing showed the negative interpolation path produced severe temporal oscillation on Adreno 830.
-- Keep mpv and Anime4K render surfaces in FP16, but convert the two AFME inputs to dedicated full-resolution RGB8 (RGBA8 fallback) GPU textures. Produce AFME outputs in that same fixed-point format. Qualcomm's reference sample uses RGB8; positive extrapolation from RGBA16F caused repeatable Adreno 830 GPU/SurfaceFlinger hangs even after batching and `glFinish()` were removed.
-- Submit at most one AFME job per presentation frame and sample that output in the same ordered GLES command stream, matching Qualcomm's reference cadence. Do not batch both phases or put `glFinish()` around the extension call.
+- Use the current and next original mpv GPU render surfaces as temporal inputs. Generate `t=1/3` and `t=2/3` between that exact pair; do not place previous-to-current intermediates after the current frame.
+- Keep mpv, Anime4K, and synthesized presentation surfaces in their original full-resolution FP16 path. Create block-aligned R8 luma copies only for motion analysis, because `GL_QCOM_motion_estimation` requires R8 inputs, and keep its RGBA16F motion fields on the GPU.
+- Compute forward and backward motion fields and use ordinary GLES inverse warping plus forward/backward consistency weights for occlusion handling.
+- Never call positive `glExtrapolateTex2DQCOM` on the OPlus 13T/Adreno 830. FP16 and RGB8 outputs, batched and one-per-presentation submissions, and blocking and nonblocking variants all caused repeatable SurfaceFlinger hangs and SystemUI restarts. The process remaining alive does not make this path safe.
+- The retired negative `glExtrapolateTex2DQCOM` experiment did not hang the display stack, but generated previous-to-current intermediates that were presented after current, producing severe temporal oscillation. Do not restore it as a release path.
 - Cache the two generated textures while the 120 Hz presentation loop holds or repeats them.
 - Preserve original frames as the only temporal inputs.
 - Keep `video-sync=audio` and `display-fps-override=0`. Display-sync was rejected by device testing because a render stall makes mpv catch up and visibly accelerates the media timeline.
 - Drive the fixed original/1/3/2/3 phases inside the VO from each source frame's realtime PTS and duration. Generated phases that miss their deadline must be dropped rather than submitted in a catch-up burst.
 - Request at least one future original frame from mpv without enabling its temporal interpolation. The renderer uses only that original pair as AFME inputs.
-- Treat AFME as asynchronous on Adreno. Preserve its fixed-point input and output textures until ordered GLES sampling is complete; rely on command ordering rather than blocking the display stack with `glFinish()`.
+- Treat motion estimation as asynchronous on Adreno. Preserve the R8 inputs and RGBA16F motion fields until ordered GLES sampling is complete; rely on GLES command ordering rather than `glFinish()`.
 - Force the AFME backend to `vo=gpu`, `gpu-api=opengl`, and `gpu-context=android`; `gpu-next` is Vulkan and cannot call the GLES extension.
-- If the extension or compatible texture format is unavailable, hold original frames and report that AFME is unavailable. Never silently fall back to the retired RIFE filter.
+- If the motion-estimation extension or compatible texture formats are unavailable, hold original frames and report that hardware frame generation is unavailable. Never silently fall back to the retired RIFE filter or the unsafe frame-extrapolation extension.
 - A crash, incorrect frame, or synchronization hazard takes priority over throughput work.
 
 ## Model policy
@@ -51,7 +182,7 @@
 - Run Dart formatting, Flutter tests, static analysis, and the arm64 Android release build.
 - Verify the APK contains the AFME-patched `libmpv.so` and does not contain RIFE model files.
 - Test on the connected OPlus device with Anime4K disabled first, then test the combined Anime4K + AFME pipeline.
-- Confirm the mpv log reports both `Adreno AFME frame-generation extension detected` and `fixed 3x frame generation is active`.
+- Confirm the mpv log reports both `Adreno AFME/AME motion-estimation extension detected` and `fixed 3x motion-compensated frame generation is active`.
 - Collect Android native crash logs and mpv render timing for every architecture iteration.
 - A process that remains alive is not proof of safety: also inspect SurfaceFlinger hang reports and SystemUI restarts after AFME tests.
 - Compare media position against wall-clock time; UI `speed=1.0` alone is not a throughput measurement.

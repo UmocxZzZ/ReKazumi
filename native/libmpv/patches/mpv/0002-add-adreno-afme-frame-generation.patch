@@ -1,5 +1,5 @@
 diff --git a/video/out/gpu/video.c b/video/out/gpu/video.c
-index f9649501f..24864c1e5 100644
+index f9649501f7764d0df94cb201cdf1018ac643b9dc..6f766d627c97a1f69755c7e63e051366b3ddbafb 100644
 --- a/video/out/gpu/video.c
 +++ b/video/out/gpu/video.c
 @@ -43,6 +43,8 @@
@@ -11,27 +11,33 @@ index f9649501f..24864c1e5 100644
  
  // must be sorted, and terminated with 0
  int filter_sizes[] =
-@@ -122,6 +124,11 @@ struct surface {
+@@ -122,6 +124,15 @@ struct surface {
      double pts;
  };
  
-+typedef void (GLAPIENTRY *PFNGLQCOMFRAMEEXTRAPOLATION)(GLuint src1,
-+                                                       GLuint src2,
-+                                                       GLuint output,
-+                                                       GLfloat scale_factor);
++typedef void (GLAPIENTRY *PFNGLQCOMMOTIONESTIMATION)(GLuint ref,
++                                                      GLuint target,
++                                                      GLuint output);
++
++#ifndef GL_MOTION_ESTIMATION_SEARCH_BLOCK_X_QCOM
++#define GL_MOTION_ESTIMATION_SEARCH_BLOCK_X_QCOM 0x8C90
++#define GL_MOTION_ESTIMATION_SEARCH_BLOCK_Y_QCOM 0x8C91
++#endif
 +
  #define SURFACES_MAX 10
  
  struct cached_file {
-@@ -210,6 +217,23 @@ struct gl_video {
+@@ -210,6 +221,25 @@ struct gl_video {
  
      struct ra_buf *hdr_peak_ssbo;
      struct surface surfaces[SURFACES_MAX];
-+    struct ra_tex *afme_input_tex[2];
++    struct ra_tex *afme_luma_tex[2];
++    struct ra_tex *afme_motion_tex[2];
 +    struct ra_tex *afme_tex[2];
 +    uint64_t afme_source_ids[2];
 +    uint8_t afme_generated_mask;
-+    PFNGLQCOMFRAMEEXTRAPOLATION afme_extrapolate;
++    PFNGLQCOMMOTIONESTIMATION afme_estimate_motion;
++    int afme_search_block[2];
 +    bool afme_announced;
 +    bool afme_failed;
 +    uint32_t afme_reported_events;
@@ -47,7 +53,7 @@ index f9649501f..24864c1e5 100644
  
      // user pass descriptions and textures
      struct tex_hook *tex_hooks;
-@@ -539,6 +563,7 @@ const struct m_sub_options gl_video_conf = {
+@@ -539,6 +569,7 @@ const struct m_sub_options gl_video_conf = {
          {"background-tile-size", OPT_INT(background_tile_size), M_RANGE(1, 4096)},
          {"interpolation", OPT_BOOL(interpolation)},
          {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
@@ -55,7 +61,7 @@ index f9649501f..24864c1e5 100644
          {"blend-subtitles", OPT_CHOICE(blend_subs,
              {"no", BLEND_SUBS_NO},
              {"yes", BLEND_SUBS_YES},
-@@ -620,6 +645,18 @@ static void gl_video_reset_surfaces(struct gl_video *p)
+@@ -620,6 +651,18 @@ static void gl_video_reset_surfaces(struct gl_video *p)
      p->surface_now = 0;
      p->frames_drawn = 0;
      p->output_tex_valid = false;
@@ -74,19 +80,20 @@ index f9649501f..24864c1e5 100644
  }
  
  static void gl_video_reset_hooks(struct gl_video *p)
-@@ -673,6 +710,11 @@ static void uninit_rendering(struct gl_video *p)
+@@ -673,6 +716,12 @@ static void uninit_rendering(struct gl_video *p)
      for (int n = 0; n < SURFACES_MAX; n++)
          ra_tex_free(p->ra, &p->surfaces[n].tex);
  
 +    for (int n = 0; n < 2; n++) {
-+        ra_tex_free(p->ra, &p->afme_input_tex[n]);
++        ra_tex_free(p->ra, &p->afme_luma_tex[n]);
++        ra_tex_free(p->ra, &p->afme_motion_tex[n]);
 +        ra_tex_free(p->ra, &p->afme_tex[n]);
 +    }
 +
      for (int n = 0; n < p->num_hook_textures; n++)
          ra_tex_free(p->ra, &p->hook_textures[n]);
  
-@@ -3267,6 +3309,259 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
+@@ -3267,6 +3316,334 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
      return true;
  }
  
@@ -108,30 +115,6 @@ index f9649501f..24864c1e5 100644
 +        return;
 +    p->afme_reported_events |= event;
 +    MP_WARN(p, "Adreno AFME debug: %s\n", message);
-+}
-+
-+static bool afme_format_supported(struct gl_video *p, struct ra_tex *tex,
-+                                  GLint *out_internal_format)
-+{
-+    if (!ra_is_gl(p->ra) || !tex || tex->params.dimensions != 2)
-+        return false;
-+
-+    GLint internal_format = 0;
-+    GLenum format = 0;
-+    GLenum type = 0;
-+    ra_gl_get_format(tex->params.format, &internal_format, &format, &type);
-+    if (out_internal_format)
-+        *out_internal_format = internal_format;
-+    (void)format;
-+    (void)type;
-+
-+    switch (internal_format) {
-+    case GL_RGBA8:
-+    case GL_RGB8:
-+        return true;
-+    default:
-+        return false;
-+    }
 +}
 +
 +static void afme_report_stats(struct gl_video *p)
@@ -174,55 +157,6 @@ index f9649501f..24864c1e5 100644
 +    p->afme_stats_bypass_still = 0;
 +}
 +
-+static const struct ra_format *afme_fixed_format(struct gl_video *p)
-+{
-+    // Qualcomm's reference implementation allocates GL_RGB8 source and
-+    // output textures. Prefer that exact path, with RGBA8 as the fixed-point
-+    // fallback when the renderer does not expose a renderable rgb8 format.
-+    const struct ra_format *format = ra_find_named_format(p->ra, "rgb8");
-+    if (!format || !format->renderable || !format->linear_filter)
-+        format = ra_find_named_format(p->ra, "rgba8");
-+    if (!format || !format->renderable || !format->linear_filter)
-+        return NULL;
-+    return format;
-+}
-+
-+static bool afme_prepare_inputs(struct gl_video *p, struct surface *first,
-+                                struct surface *second,
-+                                const struct ra_format *format)
-+{
-+    if (p->afme_source_ids[0] == first->id &&
-+        p->afme_source_ids[1] == second->id &&
-+        p->afme_input_tex[0] && p->afme_input_tex[1])
-+        return true;
-+
-+    struct surface *sources[2] = {first, second};
-+    for (int n = 0; n < 2; n++) {
-+        int w = sources[n]->tex->params.w;
-+        int h = sources[n]->tex->params.h;
-+        if (!ra_tex_resize(p->ra, p->log, &p->afme_input_tex[n],
-+                           w, h, format)) {
-+            afme_report_event(p, AFME_EVENT_INPUT_ALLOC,
-+                              "failed to allocate fixed-point input textures");
-+            return false;
-+        }
-+
-+        // Keep the complete mpv/Anime4K surface in FP16. Only this final
-+        // GPU-to-GPU pass converts the image to the fixed-point texture type
-+        // used by Qualcomm's AFME reference implementation.
-+        pass_read_tex(p, sources[n]->tex);
-+        pass_describe(p, "AFME fixed-point input %d", n);
-+        struct ra_fbo fbo = {.tex = p->afme_input_tex[n]};
-+        finish_pass_fbo(p, &fbo, true,
-+                        &(struct mp_rect){0, 0, w, h});
-+    }
-+
-+    p->afme_source_ids[0] = first->id;
-+    p->afme_source_ids[1] = second->id;
-+    p->afme_generated_mask = 0;
-+    return true;
-+}
-+
 +static bool afme_resize_output(struct gl_video *p, int index, int w, int h,
 +                               const struct ra_format *format)
 +{
@@ -230,8 +164,146 @@ index f9649501f..24864c1e5 100644
 +        return true;
 +
 +    afme_report_event(p, AFME_EVENT_OUTPUT_ALLOC,
-+                      "failed to allocate fixed-point output textures");
++                      "failed to allocate synthesized output textures");
 +    return false;
++}
++
++static int afme_align_up(int value, int alignment)
++{
++    return (value + alignment - 1) / alignment * alignment;
++}
++
++static bool afme_prepare_motion(struct gl_video *p, struct surface *first,
++                                struct surface *second)
++{
++    if (!p->afme_estimate_motion) {
++        afme_report_event(p, AFME_EVENT_NO_FUNCTION,
++                          "glTexEstimateMotionQCOM is unavailable");
++        return false;
++    }
++    if (p->afme_failed) {
++        afme_report_event(p, AFME_EVENT_DISABLED_AFTER_GL_ERROR,
++                          "motion backend was disabled after an OpenGL error");
++        return false;
++    }
++
++    int block_w = p->afme_search_block[0];
++    int block_h = p->afme_search_block[1];
++    if (block_w < 1 || block_h < 1) {
++        afme_report_event(p, AFME_EVENT_UNSUPPORTED_FORMAT,
++                          "invalid motion-estimation search block size");
++        return false;
++    }
++
++    int source_w = first->tex->params.w;
++    int source_h = first->tex->params.h;
++    int aligned_w = afme_align_up(source_w, block_w);
++    int aligned_h = afme_align_up(source_h, block_h);
++    int motion_w = aligned_w / block_w;
++    int motion_h = aligned_h / block_h;
++
++    if (p->afme_source_ids[0] == first->id &&
++        p->afme_source_ids[1] == second->id &&
++        p->afme_luma_tex[0] && p->afme_luma_tex[1] &&
++        p->afme_motion_tex[0] && p->afme_motion_tex[1])
++        return true;
++
++    const struct ra_format *luma_format =
++        ra_find_named_format(p->ra, "r8");
++    const struct ra_format *motion_format =
++        ra_find_named_format(p->ra, "rgba16f");
++    if (!luma_format || !luma_format->renderable ||
++        !luma_format->linear_filter || !motion_format ||
++        !motion_format->renderable || !motion_format->linear_filter)
++    {
++        afme_report_event(p, AFME_EVENT_UNSUPPORTED_FORMAT,
++                          "R8/RGBA16F motion textures are unavailable");
++        return false;
++    }
++
++    struct surface *sources[2] = {first, second};
++    for (int n = 0; n < 2; n++) {
++        if (!ra_tex_resize(p->ra, p->log, &p->afme_luma_tex[n],
++                           aligned_w, aligned_h, luma_format)) {
++            afme_report_event(p, AFME_EVENT_INPUT_ALLOC,
++                              "failed to allocate aligned R8 luma inputs");
++            return false;
++        }
++
++        // Motion estimation tracks brightness. Scale only the analysis copy
++        // to a search-block-aligned R8 texture; presentation surfaces remain
++        // untouched at their original size and precision.
++        pass_read_tex(p, sources[n]->tex);
++        GLSL(color = vec4(dot(color.rgb, vec3(0.2126, 0.7152, 0.0722)));)
++        pass_describe(p, "AFME/AME luma input %d", n);
++        struct ra_fbo fbo = {.tex = p->afme_luma_tex[n]};
++        finish_pass_fbo(p, &fbo, true,
++                        &(struct mp_rect){0, 0, aligned_w, aligned_h});
++
++        if (!ra_tex_resize(p->ra, p->log, &p->afme_motion_tex[n],
++                           motion_w, motion_h, motion_format)) {
++            afme_report_event(p, AFME_EVENT_OUTPUT_ALLOC,
++                              "failed to allocate RGBA16F motion fields");
++            return false;
++        }
++    }
++
++    GLuint luma_texture[2] = {0};
++    GLuint motion_texture[2] = {0};
++    GLenum luma_target[2] = {0};
++    GLenum motion_target[2] = {0};
++    for (int n = 0; n < 2; n++) {
++        ra_gl_get_raw_tex(p->ra, p->afme_luma_tex[n],
++                          &luma_texture[n], &luma_target[n]);
++        ra_gl_get_raw_tex(p->ra, p->afme_motion_tex[n],
++                          &motion_texture[n], &motion_target[n]);
++    }
++
++    if (!luma_texture[0] || !luma_texture[1] ||
++        !motion_texture[0] || !motion_texture[1] ||
++        luma_target[0] != GL_TEXTURE_2D ||
++        luma_target[1] != GL_TEXTURE_2D ||
++        motion_target[0] != GL_TEXTURE_2D ||
++        motion_target[1] != GL_TEXTURE_2D)
++    {
++        afme_report_event(p, AFME_EVENT_RAW_TEXTURE,
++                          "motion textures are not usable GL_TEXTURE_2D objects");
++        return false;
++    }
++
++    GL *gl = ra_gl_get(p->ra);
++    while (gl->GetError() != GL_NO_ERROR) {}
++
++    // Compute both directions. The public QCOM motion-estimation extension
++    // writes ordinary RGBA16F vector fields, which are consumed by the normal
++    // GLES shader path below. Never call glExtrapolateTex2DQCOM here: positive
++    // use of that separate extension reproducibly wedged SurfaceFlinger on the
++    // reference Adreno 830 in both FP16 and RGB8 configurations.
++    p->afme_estimate_motion(luma_texture[0], luma_texture[1],
++                            motion_texture[0]);
++    p->afme_estimate_motion(luma_texture[1], luma_texture[0],
++                            motion_texture[1]);
++
++    GLenum error = gl->GetError();
++    if (error != GL_NO_ERROR) {
++        MP_ERR(p, "Adreno AFME/AME motion estimation failed with OpenGL "
++               "error 0x%x; disabling it.\n", error);
++        p->afme_failed = true;
++        return false;
++    }
++
++    p->afme_source_ids[0] = first->id;
++    p->afme_source_ids[1] = second->id;
++    p->afme_generated_mask = 0;
++
++    if (!(p->afme_reported_events & AFME_EVENT_INPUT)) {
++        p->afme_reported_events |= AFME_EVENT_INPUT;
++        MP_INFO(p, "Adreno AFME/AME debug: source=%dx%d, analysis=%dx%d "
++                "R8, block=%dx%d, motion=%dx%d RGBA16F\n",
++                source_w, source_h, aligned_w, aligned_h, block_w, block_h,
++                motion_w, motion_h);
++    }
++    return true;
 +}
 +
 +static bool afme_generate_phase(struct gl_video *p, struct surface *first,
@@ -239,16 +311,6 @@ index f9649501f..24864c1e5 100644
 +{
 +    p->afme_stats_pair_requests++;
 +    mp_assert(phase == 1 || phase == 2);
-+    if (!p->afme_extrapolate) {
-+        afme_report_event(p, AFME_EVENT_NO_FUNCTION,
-+                          "glExtrapolateTex2DQCOM is unavailable");
-+        return false;
-+    }
-+    if (p->afme_failed) {
-+        afme_report_event(p, AFME_EVENT_DISABLED_AFTER_GL_ERROR,
-+                          "backend was disabled after an OpenGL error");
-+        return false;
-+    }
 +
 +    if (first->tex->params.w != second->tex->params.w ||
 +        first->tex->params.h != second->tex->params.h ||
@@ -259,27 +321,8 @@ index f9649501f..24864c1e5 100644
 +        return false;
 +    }
 +
-+    const struct ra_format *format = afme_fixed_format(p);
-+    if (!format) {
-+        afme_report_event(p, AFME_EVENT_UNSUPPORTED_FORMAT,
-+                          "no renderable RGB8/RGBA8 texture format");
++    if (!afme_prepare_motion(p, first, second))
 +        return false;
-+    }
-+    if (!afme_prepare_inputs(p, first, second, format))
-+        return false;
-+
-+    GLint afme_internal_format = 0;
-+    if (!afme_format_supported(p, p->afme_input_tex[0],
-+                               &afme_internal_format))
-+        return false;
-+
-+    if (!(p->afme_reported_events & AFME_EVENT_INPUT)) {
-+        p->afme_reported_events |= AFME_EVENT_INPUT;
-+        MP_INFO(p, "Adreno AFME debug: source=%dx%d %s, fixed-input=%s "
-+                "internal-format=0x%x\n", first->tex->params.w,
-+                first->tex->params.h, first->tex->params.format->name,
-+                format->name, afme_internal_format);
-+    }
 +
 +    int output_index = phase - 1;
 +    uint8_t output_bit = 1 << output_index;
@@ -288,56 +331,95 @@ index f9649501f..24864c1e5 100644
 +        return true;
 +    }
 +
++    const struct ra_format *output_format = first->tex->params.format;
++    if (!output_format || !output_format->renderable ||
++        !output_format->linear_filter)
++        output_format = p->fbo_format;
 +    if (!afme_resize_output(p, output_index, first->tex->params.w,
-+                            first->tex->params.h, format))
++                            first->tex->params.h, output_format))
 +        return false;
 +
-+    GLuint source_texture[2] = {0};
-+    GLuint output_texture = 0;
-+    GLenum source_target[2] = {0};
-+    GLenum output_target = 0;
-+    ra_gl_get_raw_tex(p->ra, p->afme_input_tex[0],
-+                      &source_texture[0], &source_target[0]);
-+    ra_gl_get_raw_tex(p->ra, p->afme_input_tex[1],
-+                      &source_texture[1], &source_target[1]);
-+    ra_gl_get_raw_tex(p->ra, p->afme_tex[output_index],
-+                      &output_texture, &output_target);
++    int aligned_w = p->afme_luma_tex[0]->params.w;
++    int aligned_h = p->afme_luma_tex[0]->params.h;
++    float analysis_size[2] = {aligned_w, aligned_h};
++    float mix = phase / 3.0f;
 +
-+    if (!source_texture[0] || !source_texture[1] ||
-+        !output_texture ||
-+        source_target[0] != GL_TEXTURE_2D ||
-+        source_target[1] != GL_TEXTURE_2D ||
-+        output_target != GL_TEXTURE_2D)
-+    {
-+        afme_report_event(p, AFME_EVENT_RAW_TEXTURE,
-+                          "renderer textures are not usable GL_TEXTURE_2D objects");
-+        return false;
-+    }
-+
-+    GL *gl = ra_gl_get(p->ra);
-+    while (gl->GetError() != GL_NO_ERROR) {}
-+
-+    // Qualcomm's reference sample submits one positive extrapolation job in
-+    // a presentation frame and immediately samples that output. Keep the two
-+    // 3x phases on separate presentation frames as well. GLES command order
-+    // supplies the texture dependency; a glFinish here can wedge the Adreno
-+    // display stack while synchronously waiting for the extension job.
-+    p->afme_extrapolate(source_texture[0], source_texture[1],
-+                        output_texture, phase / 3.0f);
-+
-+    GLenum error = gl->GetError();
-+    if (error != GL_NO_ERROR) {
-+        MP_ERR(p, "Adreno AFME failed with OpenGL error 0x%x; disabling it.\n",
-+               error);
-+        p->afme_failed = true;
-+        return false;
-+    }
++    // The motion vectors are expressed in aligned-analysis pixels. Two
++    // fixed-point inverse-warp iterations map each intermediate pixel back to
++    // both original frames. Forward/backward consistency reduces ghosting at
++    // occlusions without feeding either synthesized result back as an input.
++    pass_read_tex(p, first->tex);
++    gl_sc_uniform_texture(p->sc, "afme_next", second->tex);
++    gl_sc_uniform_texture(p->sc, "afme_flow01", p->afme_motion_tex[0]);
++    gl_sc_uniform_texture(p->sc, "afme_flow10", p->afme_motion_tex[1]);
++    gl_sc_uniform_dynamic(p->sc);
++    gl_sc_uniform_f(p->sc, "afme_mix", mix);
++    gl_sc_uniform_vec2(p->sc, "afme_analysis_size", analysis_size);
++    GLSL(vec2 afme_uv = texcoord0;)
++    GLSL(vec2 afme_q0 = afme_uv;)
++    GLSL(vec2 afme_q1 = afme_uv;)
++    GLSL(vec2 afme_d0 = texture(afme_flow01,
++                                clamp(afme_q0, 0.0, 1.0)).rg /
++                         afme_analysis_size;)
++    GLSL(afme_q0 = afme_uv - afme_mix * afme_d0;)
++    GLSL(afme_d0 = texture(afme_flow01,
++                           clamp(afme_q0, 0.0, 1.0)).rg /
++                    afme_analysis_size;)
++    GLSL(afme_q0 = afme_uv - afme_mix * afme_d0;)
++    GLSL(vec2 afme_d1 = texture(afme_flow10,
++                                clamp(afme_q1, 0.0, 1.0)).rg /
++                         afme_analysis_size;)
++    GLSL(afme_q1 = afme_uv - (1.0 - afme_mix) * afme_d1;)
++    GLSL(afme_d1 = texture(afme_flow10,
++                           clamp(afme_q1, 0.0, 1.0)).rg /
++                    afme_analysis_size;)
++    GLSL(afme_q1 = afme_uv - (1.0 - afme_mix) * afme_d1;)
++    GLSL(vec2 afme_back0 = texture(afme_flow10,
++                    clamp(afme_q0 + afme_d0, 0.0, 1.0)).rg;)
++    GLSL(vec2 afme_back1 = texture(afme_flow01,
++                    clamp(afme_q1 + afme_d1, 0.0, 1.0)).rg;)
++    GLSL(vec2 afme_px0 = afme_d0 * afme_analysis_size;)
++    GLSL(vec2 afme_px1 = afme_d1 * afme_analysis_size;)
++    GLSL(float afme_err0 = length(afme_px0 + afme_back0);)
++    GLSL(float afme_err1 = length(afme_px1 + afme_back1);)
++    GLSL(float afme_lim0 = 0.75 + 0.05 *
++                    (length(afme_px0) + length(afme_back0));)
++    GLSL(float afme_lim1 = 0.75 + 0.05 *
++                    (length(afme_px1) + length(afme_back1));)
++    GLSL(float afme_conf0 = 1.0 - smoothstep(afme_lim0,
++                                             afme_lim0 * 3.0,
++                                             afme_err0);)
++    GLSL(float afme_conf1 = 1.0 - smoothstep(afme_lim1,
++                                             afme_lim1 * 3.0,
++                                             afme_err1);)
++    GLSL(float afme_inside0 = step(0.0, afme_q0.x) *
++                                  step(afme_q0.x, 1.0) *
++                                  step(0.0, afme_q0.y) *
++                                  step(afme_q0.y, 1.0);)
++    GLSL(float afme_inside1 = step(0.0, afme_q1.x) *
++                                  step(afme_q1.x, 1.0) *
++                                  step(0.0, afme_q1.y) *
++                                  step(afme_q1.y, 1.0);)
++    GLSL(float afme_w0 = (1.0 - afme_mix) * afme_inside0 *
++                         (0.05 + 0.95 * afme_conf0);)
++    GLSL(float afme_w1 = afme_mix * afme_inside1 *
++                         (0.05 + 0.95 * afme_conf1);)
++    GLSL(float afme_wsum = max(afme_w0 + afme_w1, 1e-5);)
++    GLSL(vec4 afme_c0 = texture(texture0, clamp(afme_q0, 0.0, 1.0));)
++    GLSL(vec4 afme_c1 = texture(afme_next, clamp(afme_q1, 0.0, 1.0));)
++    GLSL(color = (afme_w0 * afme_c0 + afme_w1 * afme_c1) / afme_wsum;)
++    pass_describe(p, "AFME/AME bidirectional synthesis phase %d", phase);
++    struct ra_fbo output_fbo = {.tex = p->afme_tex[output_index]};
++    finish_pass_fbo(p, &output_fbo, true,
++                    &(struct mp_rect){0, 0, first->tex->params.w,
++                                      first->tex->params.h});
 +
 +    p->afme_generated_mask |= output_bit;
 +    if (p->afme_generated_mask == 0x3)
 +        p->afme_stats_pair_generated++;
 +    if (!p->afme_announced) {
-+        MP_INFO(p, "Adreno AFME fixed 3x frame generation is active.\n");
++        MP_INFO(p, "Adreno AFME/AME fixed 3x motion-compensated frame "
++                "generation is active.\n");
 +        p->afme_announced = true;
 +    }
 +    return true;
@@ -346,7 +428,7 @@ index f9649501f..24864c1e5 100644
  // Draws an interpolate frame to fbo, based on the frame timing in t
  // flags: bit set of RENDER_FRAME_* flags
  static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-@@ -3312,7 +3607,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3312,7 +3689,9 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
      bool linear = tscale->conf.kernel.function == SCALER_LINEAR;
      int size;
  
@@ -357,7 +439,7 @@ index f9649501f..24864c1e5 100644
          size = 2;
      } else {
          mp_assert(tscale->kernel && !tscale->kernel->polar);
-@@ -3374,11 +3671,22 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3374,11 +3753,22 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          pass_info_reset(p, true);
      pass_describe(p, "interpolation");
      if (!valid || t->still) {
@@ -381,7 +463,7 @@ index f9649501f..24864c1e5 100644
          // The scaler code always wants the fcoord to be between 0 and 1,
          // so we try to adjust by using the previous set of N frames instead
          // (which requires some extra checking to make sure it's valid)
-@@ -3389,13 +3697,48 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3389,13 +3779,51 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
              {
                  mix += 1.0;
                  surface_bse = prev;
@@ -397,20 +479,23 @@ index f9649501f..24864c1e5 100644
 +        if (p->opts.adreno_frame_generation) {
 +            int phase = MPCLAMP((int)floor(mix * 3.0 + 1e-7), 0, 2);
 +            struct surface *current = &p->surfaces[afme_first];
-+            struct surface *previous =
-+                &p->surfaces[surface_wrap(afme_first - 1)];
++            struct surface *next =
++                &p->surfaces[surface_wrap(afme_first + 1)];
 +            struct ra_tex *selected = current->tex;
 +
-+            // The extension's intended real-time path consumes two already
-+            // rendered frames in order, then extrapolates after the newer one.
++            // Interpolate the current-to-next original pair at t=1/3 and
++            // t=2/3. The retired negative-AFME experiment instead generated
++            // previous-to-current intermediates and presented them after the
++            // current frame, causing a one-frame temporal oscillation even
++            // though its scale-factor arithmetic was internally consistent.
 +            // Never feed generated textures back as temporal inputs.
-+            bool have_history = previous->id != 0 &&
-+                                previous->id + 1 == current->id &&
-+                                isfinite(previous->pts) &&
-+                                isfinite(current->pts) &&
-+                                previous->pts < current->pts;
-+            bool generated = phase == 0 || (have_history &&
-+                afme_generate_phase(p, previous, current, phase));
++            bool have_future = next->id != 0 &&
++                               current->id + 1 == next->id &&
++                               isfinite(current->pts) &&
++                               isfinite(next->pts) &&
++                               current->pts < next->pts;
++            bool generated = phase == 0 || (have_future &&
++                afme_generate_phase(p, current, next, phase));
 +            if (phase > 0 && generated)
 +                selected = p->afme_tex[phase - 1];
 +
@@ -431,7 +516,7 @@ index f9649501f..24864c1e5 100644
              // Oversample uses the frame area as mix ratio, not the vsync
              // position itself
              double vsync_dist = t->vsync_interval / t->ideal_frame_duration,
-@@ -3408,20 +3751,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3408,20 +3836,20 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
          }
  
          // Blend the frames together
@@ -455,7 +540,7 @@ index f9649501f..24864c1e5 100644
              struct image img =
                  image_wrap(p->surfaces[surface_wrap(surface_bse+i)].tex,
                             PLANE_RGB, p->components);
-@@ -3434,7 +3777,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
+@@ -3434,7 +3862,8 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
  
          MP_TRACE(p, "inter frame dur: %f vsync: %f, mix: %f\n",
                   t->ideal_frame_duration, t->vsync_interval, mix);
@@ -465,7 +550,7 @@ index f9649501f..24864c1e5 100644
      }
      pass_draw_to_screen(p, fbo, flags);
  
-@@ -3477,14 +3821,34 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
+@@ -3477,14 +3906,34 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
      }
  
      if (has_frame) {
@@ -502,7 +587,7 @@ index f9649501f..24864c1e5 100644
          if (interpolate) {
              gl_video_interpolate_frame(p, frame, fbo, flags);
          } else {
-@@ -3887,7 +4251,7 @@ static bool check_dumb_mode(struct gl_video *p)
+@@ -3887,7 +4336,7 @@ static bool check_dumb_mode(struct gl_video *p)
      // otherwise, use auto-detection
      if (o->correct_downscaling || o->linear_downscaling ||
          o->linear_upscaling || o->sigmoid_upscaling || o->interpolation ||
@@ -511,7 +596,7 @@ index f9649501f..24864c1e5 100644
          return false;
      // check remaining scalers (tscale is already implicitly excluded above)
      for (int i = 0; i < SCALER_COUNT; i++) {
-@@ -4022,6 +4386,7 @@ static void check_gl_features(struct gl_video *p)
+@@ -4022,6 +4471,7 @@ static void check_gl_features(struct gl_video *p)
              .background_tile_color[0] = p->opts.background_tile_color[0],
              .background_tile_color[1] = p->opts.background_tile_color[1],
              .background_tile_size = p->opts.background_tile_size,
@@ -519,7 +604,7 @@ index f9649501f..24864c1e5 100644
              .dither_algo = p->opts.dither_algo,
              .dither_depth = p->opts.dither_depth,
              .dither_size = p->opts.dither_size,
-@@ -4211,6 +4576,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+@@ -4211,6 +4661,33 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
          .video_eq = mp_csp_equalizer_create(p, g),
          .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
      };
@@ -527,19 +612,33 @@ index f9649501f..24864c1e5 100644
 +    if (ra_is_gl(ra)) {
 +        GL *gl = ra_gl_get(ra);
 +        if (gl->es &&
-+            gl_check_extension(gl->extensions, "GL_QCOM_frame_extrapolation") &&
++            gl_check_extension(gl->extensions, "GL_QCOM_motion_estimation") &&
 +            gl->get_fn)
 +        {
-+            p->afme_extrapolate = (PFNGLQCOMFRAMEEXTRAPOLATION)
-+                gl->get_fn(gl->fn_ctx, "glExtrapolateTex2DQCOM");
-+            if (p->afme_extrapolate)
-+                MP_INFO(p, "Adreno AFME frame-generation extension detected.\n");
++            p->afme_estimate_motion = (PFNGLQCOMMOTIONESTIMATION)
++                gl->get_fn(gl->fn_ctx, "glTexEstimateMotionQCOM");
++            if (p->afme_estimate_motion) {
++                gl->GetIntegerv(GL_MOTION_ESTIMATION_SEARCH_BLOCK_X_QCOM,
++                                &p->afme_search_block[0]);
++                gl->GetIntegerv(GL_MOTION_ESTIMATION_SEARCH_BLOCK_Y_QCOM,
++                                &p->afme_search_block[1]);
++                if (p->afme_search_block[0] > 0 &&
++                    p->afme_search_block[1] > 0)
++                {
++                    MP_INFO(p, "Adreno AFME/AME motion-estimation extension "
++                            "detected (block %dx%d).\n",
++                            p->afme_search_block[0],
++                            p->afme_search_block[1]);
++                } else {
++                    p->afme_estimate_motion = NULL;
++                }
++            }
 +        }
 +    }
      // make sure this variable is initialized to *something*
      p->pass = p->pass_fresh;
      struct gl_video_opts *opts = p->opts_cache->opts;
-@@ -4304,7 +4682,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
+@@ -4304,7 +4781,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
          }
      }
  
@@ -552,7 +651,7 @@ index f9649501f..24864c1e5 100644
  
  static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
 diff --git a/video/out/gpu/video.h b/video/out/gpu/video.h
-index 4f80f559f..1b09738d4 100644
+index 4f80f559f97ba0f2116b3603d47ac73429c6ebd3..1b09738d4691a5b06db117913a926721378f1c10 100644
 --- a/video/out/gpu/video.h
 +++ b/video/out/gpu/video.h
 @@ -166,6 +166,7 @@ struct gl_video_opts {
@@ -564,7 +663,7 @@ index 4f80f559f..1b09738d4 100644
      char **user_shaders;
      char **user_shader_opts;
 diff --git a/video/out/vo.c b/video/out/vo.c
-index 959371266..1c6743079 100644
+index 9593712663ea003d504d40209bb74b7126015d04..1c6743079479a32f8bb65505f2f87685b4ac09ad 100644
 --- a/video/out/vo.c
 +++ b/video/out/vo.c
 @@ -171,6 +171,7 @@ struct vo_internal {
@@ -668,7 +767,7 @@ index 959371266..1c6743079 100644
  {
      struct vo_internal *in = vo->in;
 diff --git a/video/out/vo.h b/video/out/vo.h
-index a98b0f949..1c074af4e 100644
+index a98b0f9496853d3ca417066f5d6f4c259755f5a7..1c074af4e2f24e740ad2bf9d03b76cda83c35392 100644
 --- a/video/out/vo.h
 +++ b/video/out/vo.h
 @@ -259,6 +259,11 @@ struct vo_frame {
