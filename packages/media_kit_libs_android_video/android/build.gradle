@@ -55,7 +55,7 @@ task downloadDependencies {
         def filesToDownload = [
             [
                 url: 'https://github.com/UmocxZzZ/ReKazumi/releases/download/afme-runtime-v1/rekazumi-afme-arm64-v8a.jar',
-                sha256: '5aa8e5bda748f93f6531900d4c27bb75b15379f3a8148b6b149f9c3e4e3660d7',
+                sha256: '3b84002a1ebd49854c3e66e3778ac522ca67ba803062e6271690b2b60c67fa6b',
                 name: 'rekazumi-afme-arm64-v8a.jar',
             ],
             [
