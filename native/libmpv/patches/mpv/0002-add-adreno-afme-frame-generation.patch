@@ -446,7 +446,24 @@ index f9649501f..773782a7e 100644
          if (interpolate) {
              gl_video_interpolate_frame(p, frame, fbo, flags);
          } else {
-@@ -4211,6 +4519,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
+@@ -3887,7 +4195,7 @@ static bool check_dumb_mode(struct gl_video *p)
+     // otherwise, use auto-detection
+     if (o->correct_downscaling || o->linear_downscaling ||
+         o->linear_upscaling || o->sigmoid_upscaling || o->interpolation ||
+-        o->blend_subs || o->deband || o->unsharp)
++        o->adreno_frame_generation || o->blend_subs || o->deband || o->unsharp)
+         return false;
+     // check remaining scalers (tscale is already implicitly excluded above)
+     for (int i = 0; i < SCALER_COUNT; i++) {
+@@ -4022,6 +4330,7 @@ static void check_gl_features(struct gl_video *p)
+             .background_tile_color[0] = p->opts.background_tile_color[0],
+             .background_tile_color[1] = p->opts.background_tile_color[1],
+             .background_tile_size = p->opts.background_tile_size,
++            .adreno_frame_generation = p->opts.adreno_frame_generation,
+             .dither_algo = p->opts.dither_algo,
+             .dither_depth = p->opts.dither_depth,
+             .dither_size = p->opts.dither_size,
+@@ -4211,6 +4520,19 @@ struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
          .video_eq = mp_csp_equalizer_create(p, g),
          .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
      };
@@ -466,7 +483,7 @@ index f9649501f..773782a7e 100644
      // make sure this variable is initialized to *something*
      p->pass = p->pass_fresh;
      struct gl_video_opts *opts = p->opts_cache->opts;
-@@ -4304,7 +4625,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
+@@ -4304,7 +4626,11 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
          }
      }
  
