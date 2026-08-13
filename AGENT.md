@@ -93,6 +93,71 @@
   fails. A successful build will still not authorize automatic playback;
   installation and launch must be recorded, then wait for the user to start
   video manually while system and mpv logs are collected.
+- Staged only `AGENT.md`, the native README, and the mpv patch; explicitly left
+  the user's `pubspec.lock`, `device-build/`, and `work/` changes out. Created
+  commit `ed04d8c` (`fix: replace unsafe Adreno frame extrapolation`) and pushed
+  branch `feat/anime4k-rife-3x` through the configured `mixed:10808` proxy.
+  Next operation is read-only monitoring of the triggered native workflow; no
+  APK installation is allowed until its compile result is recorded here.
+- GitHub Actions run `31685851809` completed successfully in 11m17s: patch
+  application and arm64 libmpv compilation passed and the artifact-upload step
+  passed. The release-publication step was skipped, so the existing release
+  asset was not overwritten. The only annotations were action-runtime
+  deprecation warnings, not compiler warnings. Planned next operation: download
+  this run's artifact into a new commit-specific `device-build` directory,
+  calculate its SHA-256, and inspect the packaged `libmpv.so` for the new motion
+  symbol and absence of the unsafe extrapolation symbol before pinning it.
+- First artifact download attempt through `mixed:10808` timed out after about
+  124 seconds. Inspection showed `device-build/ame-ed04d8c` was empty, so no
+  partial file was accepted or used. This is a transfer failure, not a native
+  build failure. Planned retry: use the same GitHub run and artifact with a
+  longer timeout; keep the same empty destination and verify the archive/JAR
+  before any subsequent operation.
+- Second download command also reached its timeout, after about 364 seconds,
+  but left a 9,115,591-byte `rekazumi-afme-arm64-v8a.jar` in the destination.
+  Because the command did not report success, treat this file as untrusted
+  until JAR structure, CRC/extraction, SHA-256, and contained `libmpv.so`
+  strings/symbols pass. Do not pin, package, or install it merely because a
+  file exists.
+- The downloaded JAR passed validation despite the CLI timeout: `jar tf` and
+  full extraction succeeded; it contains arm64 `libmpv.so` (21,735,648 bytes)
+  and `libmediakitandroidhelper.so` (386,584 bytes). JAR SHA-256 is
+  `5aa8e5bda748f93f6531900d4c27bb75b15379f3a8148b6b149f9c3e4e3660d7`.
+  Binary string inspection found `GL_QCOM_motion_estimation`,
+  `glTexEstimateMotionQCOM`, and the new `Adreno AFME/AME` logs; it found
+  neither `GL_QCOM_frame_extrapolation` nor `glExtrapolateTex2DQCOM`.
+  Conclusion: this is the correct safe candidate native artifact. Planned next
+  operation is to inspect the project's runtime pin mechanism and bind this
+  exact local JAR/hash without publishing over the old release asset.
+- Runtime-pin inspection found the arm64 dependency still pointed at the old
+  RGB8 release JAR with SHA-256 `404c76fd...107c66`, which is the build that
+  reproduced the latest SurfaceFlinger hang. Updated the expected arm64 hash
+  to the verified motion-estimation JAR SHA-256
+  `5aa8e5bda748f93f6531900d4c27bb75b15379f3a8148b6b149f9c3e4e3660d7`
+  and updated the local plugin description. Planned external write: replace
+  only the single `afme-runtime-v1/rekazumi-afme-arm64-v8a.jar` release asset
+  with this byte-for-byte verified local JAR through `mixed:10808`; then
+  download/hash the remote asset independently before committing the pin.
+- `gh release upload --clobber` completed successfully for exactly
+  `afme-runtime-v1/rekazumi-afme-arm64-v8a.jar`; no other release asset or tag
+  was changed. Planned verification: download that named asset into a separate
+  `device-build/ame-ed04d8c-remote-check` directory and require its SHA-256 to
+  match `5aa8e5bd...e3660d7` before the runtime-pin commit or APK build.
+- The named remote asset downloaded successfully to the independent check
+  directory. The first local comparison command contained an invalid
+  PowerShell generic-method expression for `SequenceEqual[byte]` and stopped
+  with a parser error before performing comparison. This was a diagnostic
+  command mistake and changed no file. Retry uses independently computed file
+  sizes and SHA-256 values; matching cryptographic hashes are sufficient and
+  avoid loading both 9 MB files into PowerShell arrays.
+- Local and independently re-downloaded remote JARs are both 9,115,591 bytes
+  and both hash to
+  `5aa8e5bda748f93f6531900d4c27bb75b15379f3a8148b6b149f9c3e4e3660d7`.
+  The release replacement is therefore verified byte-for-byte by SHA-256.
+  Planned next operation: stage only this journal, the arm64 runtime hash, and
+  its README; commit and push the pin. Then perform an Android package build
+  through the proxy, without installing it, and verify the APK's embedded
+  `libmpv.so` before any device action.
 
 ### GitHub reference review
 
