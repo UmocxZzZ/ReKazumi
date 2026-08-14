@@ -8,6 +8,7 @@ import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/controller/player_debug_controller.dart';
 import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
+import 'package:kazumi/pages/player/controller/player_frame_generation_session.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/services/shaders/shader_asset_service.dart';
 import 'package:kazumi/utils/constants.dart';
@@ -69,6 +70,7 @@ abstract class _PlayerPlaybackController with Store {
   final bool Function() isLocalPlayback;
   final PlayerScreenshotService screenshotService =
       const PlayerScreenshotService();
+  final FrameGenerationSession frameGeneration = FrameGenerationSession();
   late final PlaybackCachePolicy cachePolicy = PlaybackCachePolicy(
     isLocalPlayback: isLocalPlayback,
     currentPlayer: () => mediaPlayer,
@@ -138,6 +140,7 @@ abstract class _PlayerPlaybackController with Store {
 
   @action
   void resetForInit() {
+    frameGeneration.reset();
     playing = false;
     loading = true;
     isBuffering = true;
@@ -249,6 +252,8 @@ abstract class _PlayerPlaybackController with Store {
       storedFrameInterpolationMode,
     );
     if (frameInterpolationMode.enabled && !frameInterpolationMode.available) {
+      frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+      frameGeneration.markUnavailable('no validated Vulkan backend');
       await GStorage.putSetting<int>(
         SettingsKeys.defaultFrameInterpolationMode,
         FrameInterpolationMode.off.storageValue,
@@ -300,6 +305,7 @@ abstract class _PlayerPlaybackController with Store {
         isCurrentPlayer: isCurrentPlayer,
         playerDebugMode: playerDebugMode,
       );
+      debug.reportFrameGeneration(frameGeneration.snapshot);
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
       }
@@ -564,7 +570,16 @@ abstract class _PlayerPlaybackController with Store {
         await _setMpvOption(pp, 'video-sync', 'audio');
         await _setMpvOption(pp, 'display-fps-override', '0');
         frameInterpolationMode = FrameInterpolationMode.off;
+        frameGeneration.reset();
+        debug.reportFrameGeneration(frameGeneration.snapshot);
         return true;
+      }
+
+      if (!mode.available) {
+        frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+        frameGeneration.markUnavailable('no validated Vulkan backend');
+        debug.reportFrameGeneration(frameGeneration.snapshot);
+        return false;
       }
 
       if (!Platform.isAndroid) {
@@ -594,6 +609,8 @@ abstract class _PlayerPlaybackController with Store {
       return true;
     } catch (error, stackTrace) {
       frameInterpolationMode = FrameInterpolationMode.off;
+      frameGeneration.fault(error.toString());
+      debug.reportFrameGeneration(frameGeneration.snapshot);
       KazumiLogger().e(
         'PlayerController: failed to enable fixed 3x Adreno AFME frame generation',
         error: error,

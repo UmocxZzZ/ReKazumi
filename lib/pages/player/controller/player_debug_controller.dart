@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:kazumi/services/logging/logger.dart';
+import 'package:kazumi/pages/player/controller/player_frame_generation_session.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:mobx/mobx.dart';
 
@@ -46,6 +47,14 @@ abstract class _PlayerDebugController with Store {
   StreamSubscription<double?>? playerAudioBitrateSubscription;
   StreamSubscription<double?>? playerVideoBitrateSubscription;
 
+  String get frameGenerationStatus {
+    for (final entry in playerLog.reversed) {
+      final marker = entry.lastIndexOf('ReKazumi FG:');
+      if (marker >= 0) return entry.substring(marker);
+    }
+    return '';
+  }
+
   Future<void> setup(
     Player player, {
     required bool Function(Player player) isCurrentPlayer,
@@ -56,7 +65,9 @@ abstract class _PlayerDebugController with Store {
     playerLogSubscription = player.stream.log.listen((event) {
       final message = event.toString();
       playerLog.add(message);
-      if (playerDebugMode || message.contains('Adreno AFME')) {
+      if (playerDebugMode ||
+          message.contains('Adreno AFME') ||
+          message.contains('ReKazumi FG')) {
         KazumiLogger().i('MPV: $message', forceLog: true);
       }
     });
@@ -101,6 +112,12 @@ abstract class _PlayerDebugController with Store {
     playerVideoBitrateSubscription = player.stream.videoBitrate.listen((event) {
       playerVideoBitrate = event.toString();
     });
+  }
+
+  void reportFrameGeneration(FrameGenerationSnapshot snapshot) {
+    final message = snapshot.toLogLine();
+    playerLog.add(message);
+    KazumiLogger().i(message, forceLog: true);
   }
 
   Future<void> cancel() async {

@@ -252,6 +252,16 @@ class _VideoDetailsSheetState extends State<VideoDetailsSheet>
             ],
           ),
           SettingsSection(
+            title: const Text('帧生成'),
+            tiles: [
+              _statusTile(
+                Icons.animation_rounded,
+                '后端状态与计数',
+                debug.frameGenerationStatus,
+              ),
+            ],
+          ),
+          SettingsSection(
             title: const Text('音频'),
             tiles: [
               _statusTile(

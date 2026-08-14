@@ -712,3 +712,71 @@
   self-changing hash here. AGENT-only changes do not match the Android
   validation workflow paths, so this documentation push must not start another
   APK build.
+
+### Safe backend foundation (2026-08-14)
+
+- User requested continuation. The next implementation is deliberately limited
+  to algorithm-independent infrastructure: a backend/session state machine,
+  counters, structured diagnostics, and a sticky per-session fault fuse. The
+  default backend remains unavailable/no-op, and this work must not install,
+  start, or test playback on the phone.
+- Planned state contract: `disabled -> probing -> ready -> active`; unavailable
+  and faulted states cannot activate; fault remains sticky until explicit
+  session reset. Diagnostics include backend/state/reason, source/generated/
+  generated-present counts, deadline drops, and duplicate/scene-cut bypasses.
+  Integrate the snapshot into the existing log page and keep the rejected mpv
+  option behind the availability guard. Add pure Dart transition/counter tests
+  before any native Vulkan implementation.
+- Implemented the pure Dart session state machine and connected its structured
+  `ReKazumi FG:` snapshot to the player log. Persisted unavailable 3x settings
+  enter `backend=vulkan state=unavailable`, are reset to Off, and never reach
+  mpv activation. The existing off path resets counters; activation exceptions
+  set the sticky fault state. Targeted tests passed 7/7 and focused static
+  analysis reported no issues.
+- A first combined patch for the dedicated status row failed atomically because
+  its expected context used the terminal's mojibake rendering instead of the
+  UTF-8 Chinese text actually stored in `video_details_sheet.dart`. No file in
+  that combined patch changed. Re-read stable icon-based context and retry with
+  the real source text.
+- Next safe UI step: derive the latest structured frame-generation line from
+  the already-observable log list and show it as a dedicated status row. This
+  avoids changing MobX generated files while making backend/state/counters
+  visible on the status page.
+- Added the dedicated status row and latest-line extraction. The expanded
+  targeted suite passed 8/8, but the new debug-report test printed a caught
+  logger warning because Flutter's ServicesBinding was not initialized before
+  the logger attempted file output. This did not fail the test or affect app
+  code. Initialize `TestWidgetsFlutterBinding` in the test and rerun so the
+  verification output is clean.
+- Initializing ServicesBinding removed the first warning but exposed the next
+  expected unit-test limitation: no native path-provider plugin exists in this
+  pure Dart test, so the logger again printed a caught file-output warning.
+  The test should validate the observable log extraction with the snapshot's
+  pure log line directly; production `reportFrameGeneration` remains the thin
+  append-plus-log wrapper. Remove the unnecessary binding and rerun.
+- After removing the logger call from the pure unit test, the first combined
+  format/test command produced no output and hit the shell tool's 120-second
+  timeout. A subsequent process check found no remaining Dart or Flutter
+  process. Treat this as an inconclusive tooling timeout, not a test failure;
+  split formatting and testing into separate commands before evaluating code.
+- The Flutter SDK batch wrappers also timed out even for `dart --version`, while
+  the SDK's embedded `dart.exe --version` returned immediately. Direct format
+  then exposed the real sandbox issue: Dart analytics initialization was denied
+  access to `C:\Users\Skrindo\AppData\Roaming\.dart-tool`. Run the normal
+  project verification with the required host permission instead of changing
+  system paths or treating the wrapper timeout as an application defect.
+- With the required host permission, formatting reported no changes, the two
+  targeted suites passed cleanly (8/8) with no logger/plugin warnings, and
+  focused analysis of the session, debug, playback, status-sheet, and test files
+  reported no issues. `git diff --check` also passed. `pubspec.lock` still has
+  no content diff and remains excluded with the pre-existing generated output.
+- Full `flutter test` passed 140/140. Its caught ServicesBinding warnings came
+  from the existing malformed-history-log recovery tests, not from the new
+  frame-generation tests. Full analysis with warnings fatal completed
+  successfully; it reported only the repository's 18 pre-existing info-level
+  findings and no warning/error. No APK was built or installed and no device
+  command was issued during this foundation verification.
+- Created commit `a73f9e2` (`feat: add fail-closed frame generation state`) with
+  only the six implementation/test files plus this journal. Amend this operation
+  record into the same unpushed commit; continue excluding the unchanged-content
+  `pubspec.lock` and generated `device-build/`, `work/`, and package build output.
