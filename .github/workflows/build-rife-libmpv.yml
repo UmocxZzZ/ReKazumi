@@ -79,6 +79,7 @@ jobs:
           grep -aqF "ReKazumi frame generation disabled" /tmp/rekazumi-prototype-check/libmpv.so
           grep -aqF "ReKazumi global motion cost" /tmp/rekazumi-prototype-check/libmpv.so
           grep -aqF "ReKazumi global motion reduce" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi frame generation helper creation failed" /tmp/rekazumi-prototype-check/libmpv.so
           grep -aqF "global-ms=" /tmp/rekazumi-prototype-check/libmpv.so
           echo "Required Vulkan prototype and fail-closed markers found"
           if grep -aqE "GL_QCOM_|glExtrapolateTex2DQCOM|glTexEstimateMotionQCOM" /tmp/rekazumi-prototype-check/libmpv.so; then

@@ -1150,3 +1150,64 @@
   with only the updated mpv patch, strengthened upload-only marker gate, and
   journal. Amend this record into that unpushed commit, push through the proxy,
   and require the fourth native compile/binary gate before accepting it.
+- The amended hierarchical-search commit is `9fb405f`; push through
+  `mixed:10808` succeeded and started upload-only native run `31768771519`.
+  A read-only status check while it was running showed setup, dependency, SDK,
+  NDK, and source preparation complete, with the arm64 native compile still in
+  progress and no failed step. Do not interpret an in-progress result as a
+  successful build; the binary-marker gate and final conclusion are still
+  required.
+- Planned next native change while that independent run continues: isolate
+  frame-generation source conversion from gpu-next's main renderer state by
+  creating a dedicated libplacebo renderer on the existing `pl_gpu`. This must
+  not create a second Vulkan instance, device, or queue. Activation remains
+  fail-closed if either the compute dispatcher or helper renderer is missing.
+  Regenerate the contextual patch from the exact pinned mpv base, apply it in a
+  fresh clean checkout, and require another upload-only arm64 compile before
+  accepting it. No app runtime pin, APK, installation, adb, or phone state may
+  be changed by this operation.
+- Regenerated the tracked contextual mpv patch from the isolated pinned source
+  after adding the helper renderer. The first attempt to create clean validation
+  checkout `work/mpv-vulkan-patch-check-7` failed before creating it: the clone
+  command marked only the source worktree as command-local safe, but Git also
+  evaluates its inner `.git` path and rejected that path for host/sandbox owner
+  mismatch. Subsequent chained validation commands consequently reported that
+  the destination did not exist. No global Git setting or tracked source was
+  changed. Retry must mark both exact source paths command-locally safe; do not
+  weaken global ownership checks.
+- Retried with command-local safety entries for both exact source paths.
+  `work/mpv-vulkan-patch-check-7` was created at pinned mpv commit
+  `32a164cc017acab50389f2194f720ccfd0b01a28`; patch apply-check, actual apply,
+  and patched-source `git diff --check` passed. The diff remains limited to
+  `video/out/vo.c`, `video/out/vo.h`, and `video/out/vo_gpu_next.c` with 619
+  insertions and 11 deletions. Added a CI binary gate for the helper-renderer
+  failure marker so a build cannot upload an older/non-isolated native binary.
+  A second read-only check of run `31768771519` still showed only the native
+  compile in progress, with all preceding steps successful and no failed gate.
+- Hierarchical-search run `31768771519` completed successfully in 11m46s.
+  Arm64 native compilation, strengthened global-motion marker verification,
+  rejected-QCOM absence check, and artifact upload all passed. JAR SHA-256 is
+  `2262e609dfad76d25348e49d7a9f8d271c45486dceb21728279351af0075857e`;
+  contained `libmpv.so` SHA-256 is
+  `25e720f49528ff6f4a2d666a46135bef3eff58bbde74f7b8b5e18a11c703fc8e`.
+  Artifact id `9207534287` is 9,090,259 bytes and unexpired. Only the known
+  upstream Node/action deprecation annotations appeared. This accepts the
+  hierarchical implementation as compile/binary-valid, not device-ready.
+- Planned Git operation: stage only the helper-renderer workflow gate, updated
+  contextual mpv patch, and this journal; create a dedicated renderer-isolation
+  commit, leaving `pubspec.lock` and every generated/reference directory out.
+  Push may trigger only the upload-only native workflow. Require its compile and
+  helper-marker checks to pass before accepting the isolation change; do not
+  publish or pin the resulting prototype artifact into the app.
+- The first exact-file staging command was denied when the sandbox could not
+  create `.git/index.lock`. No file was staged and the subsequent cached checks
+  therefore showed only ordinary unstaged status. This is a local repository
+  metadata permission failure, not a source validation failure. Retry the same
+  three-path staging operation with repository-write approval; do not broaden
+  the staged path set.
+- Retried with repository-write approval and staged exactly the three planned
+  paths. Cached whitespace checking outside the conventional patch container
+  passed, and staged statistics confirmed no unrelated file. Created local
+  commit `66014f2` (`feat: isolate Vulkan framegen renderer`). Amend this result
+  into that still-unpushed commit, then push through `mixed:10808` and monitor
+  the resulting upload-only native workflow to completion.
