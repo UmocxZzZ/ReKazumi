@@ -1317,3 +1317,11 @@
   device safety. This documentation change does not enable any runtime path.
   Planned Git operation: commit only this documentation plus the accumulated
   journal, leaving all unrelated/generated paths untouched, then push it.
+- Staged only `AGENT.md` and the architecture document; whitespace and staged
+  scope checks passed. Created commit `159849b` (`docs: record Vulkan prototype
+  validation`) and pushed it through `mixed:10808`. The branch is now at a safe
+  off-device checkpoint: the parallel Vulkan prototype is source/CI-valid but
+  remains absent from the app runtime. Next authorized engineering phase is an
+  Android Vulkan offscreen output, phase, and GPU-time harness. Do not install,
+  launch, present, change refresh rate, or enable Dart 3x before that harness
+  passes and a separate short-presentation candidate is explicitly prepared.
