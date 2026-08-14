@@ -50,7 +50,7 @@ void main() {
     expect(capabilities.unavailableReason, 'vulkan_1_1_unavailable_sdk_28');
   });
 
-  test('a linked backend still waits for native extension validation',
+  test('validated native prerequisites still cannot enable transport',
       () async {
     final service = FrameGenerationCapabilityService(
       invoke: () async => <Object?, Object?>{
@@ -62,13 +62,49 @@ void main() {
         'vulkanHardwareLevel': 1,
         'hasVulkan11': true,
         'nativeBackendLinked': true,
+        'nativeExtensionProbeComplete': true,
+        'nativeDeviceName': 'Adreno test device',
+        'nativeDeviceApiMajor': 1,
+        'nativeDeviceApiMinor': 3,
+        'hasExternalMemoryAhb': true,
+        'hasTimelineSemaphore': true,
+        'nativePrerequisitesReady': true,
+        'transportBackendImplemented': false,
+        'nativeProbeError': '',
       },
     );
 
     final capabilities = await service.probe();
 
     expect(capabilities.nativeBackendLinked, isTrue);
-    expect(capabilities.unavailableReason, 'native_extension_probe_pending');
+    expect(capabilities.nativeDeviceName, 'Adreno test device');
+    expect(
+      capabilities.unavailableReason,
+      'transport_backend_not_implemented_vulkan_1_3',
+    );
+  });
+
+  test('native probe fails closed when required AHB transport is absent',
+      () async {
+    final service = FrameGenerationCapabilityService(
+      invoke: () async => <Object?, Object?>{
+        'androidSdk': 36,
+        'vulkanMajor': 1,
+        'vulkanMinor': 3,
+        'hasVulkan11': true,
+        'nativeBackendLinked': true,
+        'nativeExtensionProbeComplete': true,
+        'hasExternalMemoryAhb': false,
+        'hasTimelineSemaphore': true,
+        'nativePrerequisitesReady': false,
+        'transportBackendImplemented': false,
+        'nativeProbeError': '',
+      },
+    );
+
+    final capabilities = await service.probe();
+
+    expect(capabilities.unavailableReason, 'external_memory_ahb_unavailable');
   });
 
   test('fails closed on missing or malformed platform responses', () async {
@@ -88,5 +124,24 @@ void main() {
       throwingResult.unavailableReason,
       'capability_probe_failed_StateError',
     );
+  });
+
+  test('times out and caches one native probe per controller', () async {
+    var invocations = 0;
+    final service = FrameGenerationCapabilityService(
+      timeout: const Duration(milliseconds: 5),
+      invoke: () async {
+        invocations++;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        return <Object?, Object?>{};
+      },
+    );
+
+    final first = await service.probe();
+    final second = await service.probe();
+
+    expect(first.unavailableReason, 'capability_probe_failed_TimeoutException');
+    expect(identical(first, second), isTrue);
+    expect(invocations, 1);
   });
 }

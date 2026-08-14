@@ -21,6 +21,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import com.ryanheise.audioservice.AudioServiceActivity
+import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.predidit.kazumi/intent"
@@ -39,6 +41,18 @@ class MainActivity: AudioServiceActivity() {
     private var pipAspectWidth = 16
     private var pipAspectHeight = 9
     private var androidFullscreen = false
+    private val frameGenerationProbeExecutor = Executors.newSingleThreadExecutor()
+
+    private val nativeFrameGenerationLoadError: String? by lazy {
+        try {
+            System.loadLibrary("rekazumi_framegen")
+            null
+        } catch (error: LinkageError) {
+            error.javaClass.simpleName
+        } catch (error: SecurityException) {
+            error.javaClass.simpleName
+        }
+    }
 
     private val actionPipPlayPause = "com.predidit.kazumi.pip.PLAY_PAUSE"
     private val actionPipForward = "com.predidit.kazumi.pip.FORWARD"
@@ -61,6 +75,7 @@ class MainActivity: AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        frameGenerationProbeExecutor.shutdownNow()
         unregisterPipActionReceiverIfNeeded()
         super.onDestroy()
     }
@@ -117,7 +132,10 @@ class MainActivity: AudioServiceActivity() {
             FRAME_GENERATION_CHANNEL,
         ).setMethodCallHandler { call, result ->
             when (call.method) {
-                "probeVulkan" -> result.success(probeVulkanCapabilities())
+                "probeVulkan" -> frameGenerationProbeExecutor.execute {
+                    val capabilities = probeVulkanCapabilities()
+                    runOnUiThread { result.success(capabilities) }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -183,7 +201,7 @@ class MainActivity: AudioServiceActivity() {
         val vulkanPatch = vulkanVersion and 0xfff
         val vulkan11 = (1 shl 22) or (1 shl 12)
 
-        return mapOf(
+        val capabilities = mutableMapOf<String, Any>(
             "androidSdk" to Build.VERSION.SDK_INT,
             "vulkanVersion" to vulkanVersion,
             "vulkanMajor" to vulkanMajor,
@@ -191,11 +209,52 @@ class MainActivity: AudioServiceActivity() {
             "vulkanPatch" to vulkanPatch,
             "vulkanHardwareLevel" to vulkanHardwareLevel,
             "hasVulkan11" to (vulkanVersion >= vulkan11),
-            // Java can report the Android Vulkan feature level, but the required
-            // device extensions must still be enumerated by the future NDK backend.
             "nativeBackendLinked" to false,
+            "nativeExtensionProbeComplete" to false,
+            "hasExternalMemoryAhb" to false,
+            "hasTimelineSemaphore" to false,
+            "nativePrerequisitesReady" to false,
+            "transportBackendImplemented" to false,
         )
+
+        val loadError = nativeFrameGenerationLoadError
+        if (loadError != null) {
+            capabilities["nativeProbeError"] = loadError
+            return capabilities
+        }
+
+        capabilities["nativeBackendLinked"] = true
+        try {
+            val native = JSONObject(probeNativeVulkanCapabilities())
+            capabilities["nativeExtensionProbeComplete"] =
+                native.optBoolean("probeComplete", false)
+            capabilities["nativeDeviceName"] = native.optString("deviceName", "")
+            capabilities["nativeDeviceApiVersion"] =
+                native.optInt("deviceApiVersion", 0)
+            capabilities["nativeDeviceApiMajor"] =
+                native.optInt("deviceApiMajor", 0)
+            capabilities["nativeDeviceApiMinor"] =
+                native.optInt("deviceApiMinor", 0)
+            capabilities["nativeDeviceApiPatch"] =
+                native.optInt("deviceApiPatch", 0)
+            capabilities["hasExternalMemoryAhb"] =
+                native.optBoolean("hasExternalMemoryAhb", false)
+            capabilities["hasTimelineSemaphore"] =
+                native.optBoolean("hasTimelineSemaphore", false)
+            capabilities["nativePrerequisitesReady"] =
+                native.optBoolean("nativePrerequisitesReady", false)
+            capabilities["transportBackendImplemented"] =
+                native.optBoolean("transportBackendImplemented", false)
+            capabilities["nativeProbeError"] = native.optString("error", "")
+        } catch (error: LinkageError) {
+            capabilities["nativeProbeError"] = error.javaClass.simpleName
+        } catch (error: RuntimeException) {
+            capabilities["nativeProbeError"] = error.javaClass.simpleName
+        }
+        return capabilities
     }
+
+    private external fun probeNativeVulkanCapabilities(): String
 
     private fun systemFeatureVersion(featureName: String): Int {
         return packageManager.systemAvailableFeatures

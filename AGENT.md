@@ -825,3 +825,49 @@
   with only the capability channel/service/tests, playback integration, CI
   coverage, and journal. Amend this operation record into the same unpushed
   commit, then push through the approved local proxy and require CI success.
+
+### Headless native Vulkan extension probe (2026-08-14)
+
+- The second-stage commit was amended to final id `37d828e`, pushed through the
+  local proxy, and CI run `31763006261` passed in 9m47s. Expanded formatting,
+  143 tests at that revision, full analysis, arm64 APK build, safe `libmpv`
+  verification, package check, and artifact upload all succeeded. The device was
+  not used.
+- Confirmed local CMake 3.22.1, NDK 27.2, Vulkan Android external-memory header,
+  and timeline semaphore feature definitions before adding native code. The new
+  `librekazumi_framegen.so` is a capability probe only: it creates a headless
+  Vulkan instance, enumerates physical devices/extensions, queries the timeline
+  semaphore feature, destroys the instance, and returns JSON. It never creates a
+  logical device, queue, image, AHardwareBuffer, surface, swapchain, or frame.
+- Native prerequisites require device Vulkan 1.1,
+  `VK_ANDROID_external_memory_android_hardware_buffer`, and a usable timeline
+  semaphore (core 1.2 or extension plus enabled feature). Even when all are
+  present, Kotlin reports `transportBackendImplemented=false`, and Dart remains
+  fail-closed with `transport_backend_not_implemented_*`.
+- Moved the native call to a dedicated single-thread executor so driver probing
+  cannot block Android's UI thread. Dart imposes a 500 ms timeout and caches one
+  result per player controller; timeout, library load errors, JNI/JSON errors,
+  missing AHB, missing timeline semaphore, and incomplete probes all remain
+  unavailable. Targeted tests passed 14/14, including timeout/cache and the
+  "all prerequisites but no transport" gate. Focused analysis passed.
+- Standalone CMake release compilation succeeded for all configured ABIs. Two
+  local arm64 APK builds succeeded; the final incremental build contains the
+  Vulkan 1.1 physical-device gate. Full tests passed 146/146 and full analysis
+  retained only the existing 18 info-level findings. Existing NDK/Kotlin/Gradle
+  version warnings were recorded previously and remain non-fatal.
+- APK inspection found arm64 `libmpv.so`, `libmediakitandroidhelper.so`, and
+  `librekazumi_framegen.so`. The first unprivileged `llvm-strings.exe` attempt
+  was denied by the sandbox after extraction; rerunning the read-only inspection
+  with required permission succeeded. The probe marker and JNI export were both
+  present. Final local hashes: APK
+  `56e26970a8a6a955abfe6239b9c9e92baf1ef3a6e288ed14b80e6f42b113ed99`,
+  framegen probe `.so`
+  `e888fa5350f7925d9b6dd3869053dffc2e02d283f021c7182a3e829be92f19ec`,
+  and safe `libmpv.so` remains exactly
+  `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  The APK was not installed or executed.
+- Created commit `3e3de58` (`feat: add headless Vulkan capability probe`) with
+  only the native probe/CMake integration, asynchronous Kotlin bridge, Dart
+  timeout and fail-closed gates, tests, CI packaging marker check, and journal.
+  Amend this operation record into the same unpushed commit, then push through
+  the local proxy and require the complete Android CI gate to pass.

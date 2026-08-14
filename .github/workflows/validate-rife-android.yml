@@ -88,6 +88,7 @@ jobs:
           unzip -l build/app/outputs/flutter-apk/app-release.apk > /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libmpv.so' /tmp/apk-contents.txt
           grep -q 'lib/arm64-v8a/libmediakitandroidhelper.so' /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/librekazumi_framegen.so' /tmp/apk-contents.txt
           ! grep -q 'lib/arm64-v8a/libkazumi_rife.so' /tmp/apk-contents.txt
           ! grep -q 'flutter_assets/assets/models/rife-v4.25-lite/' /tmp/apk-contents.txt
           unzip -p build/app/outputs/flutter-apk/app-release.apk \
@@ -98,6 +99,10 @@ jobs:
             | grep -q 'Adreno AFME/AME disabled after device instability'
           ! strings /tmp/rekazumi-safe-libmpv.so \
             | grep -q 'motion-estimation extension detected'
+          unzip -p build/app/outputs/flutter-apk/app-release.apk \
+            lib/arm64-v8a/librekazumi_framegen.so > /tmp/rekazumi-framegen-probe.so
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi framegen capability probe v1'
           METADATA_PATH="$(find build/app/outputs -name output-metadata.json -print -quit)"
           test -n "$METADATA_PATH"
           python - "$METADATA_PATH" <<'PY'
