@@ -125,7 +125,7 @@ index a98b0f949..ae3e71cee 100644
  double vo_get_vsync_interval(struct vo *vo);
  double vo_get_estimated_vsync_interval(struct vo *vo);
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 3f0b18f4d..d4d9c16d9 100644
+index 3f0b18f4d..2399292f8 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
 @@ -21,13 +21,19 @@
@@ -148,23 +148,30 @@ index 3f0b18f4d..d4d9c16d9 100644
  #include "config.h"
  #include "common/common.h"
  #include "misc/io_utils.h"
-@@ -120,6 +126,15 @@ struct priv {
+@@ -120,6 +126,22 @@ struct priv {
      pl_renderer rr;
      pl_queue queue;
      pl_swapchain sw;
 +    pl_dispatch framegen_dispatch;
 +    pl_tex framegen_source[2];
 +    pl_tex framegen_motion;
++    pl_tex framegen_score;
 +    pl_tex framegen_output[2];
 +    uint64_t framegen_pair[2];
 +    unsigned framegen_output_mask;
 +    bool framegen_vulkan;
 +    bool framegen_failed;
 +    bool framegen_announced;
++    int64_t framegen_stats_last_ns;
++    uint64_t framegen_pairs;
++    uint64_t framegen_phases;
++    uint64_t framegen_bypasses;
++    uint64_t framegen_motion_ns;
++    uint64_t framegen_warp_ns;
      pl_fmt osd_fmt[SUBBITMAP_COUNT];
      pl_tex *sub_tex;
      int num_sub_tex;
-@@ -171,6 +186,7 @@ struct gl_next_opts {
+@@ -171,6 +193,7 @@ struct gl_next_opts {
      float background_blur_radius;
      float corner_rounding;
      bool inter_preserve;
@@ -172,7 +179,7 @@ index 3f0b18f4d..d4d9c16d9 100644
      struct user_lut lut;
      struct user_lut image_lut;
      struct user_lut target_lut;
-@@ -208,6 +224,7 @@ const struct m_sub_options gl_next_conf = {
+@@ -208,6 +231,7 @@ const struct m_sub_options gl_next_conf = {
  #endif
          {"corner-rounding", OPT_FLOAT(corner_rounding), M_RANGE(0, 1)},
          {"interpolation-preserve", OPT_BOOL(inter_preserve)},
@@ -180,10 +187,40 @@ index 3f0b18f4d..d4d9c16d9 100644
          {"lut", OPT_STRING(lut.opt), .flags = M_OPT_FILE},
          {"lut-type", OPT_CHOICE_C(lut.type, lut_types)},
          {"image-lut", OPT_STRING(image_lut.opt), .flags = M_OPT_FILE},
-@@ -998,6 +1015,307 @@ static enum pl_color_primaries get_best_prim_container(const struct pl_raw_prima
+@@ -998,6 +1022,355 @@ static enum pl_color_primaries get_best_prim_container(const struct pl_raw_prima
  static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
                                       const struct mp_image *mpi);
  
++static void framegen_info_callback(void *priv,
++                                   const struct pl_dispatch_info *info)
++{
++    struct priv *p = priv;
++    if (!info->last || !info->shader || !info->shader->description)
++        return;
++    if (strstr(info->shader->description, "block motion"))
++        p->framegen_motion_ns = info->last;
++    else if (strstr(info->shader->description, "ReKazumi warp"))
++        p->framegen_warp_ns = info->last;
++}
++
++static void framegen_report_stats(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++    int64_t now = mp_time_ns();
++    if (p->framegen_stats_last_ns &&
++        now - p->framegen_stats_last_ns < MP_TIME_S_TO_NS(1))
++        return;
++    MP_INFO(vo, "ReKazumi FG: backend=vulkan-prototype state=%s "
++            "pairs=%llu phases=%llu bypasses=%llu motion-ms=%.3f warp-ms=%.3f\n",
++            p->framegen_failed ? "faulted" : "active",
++            (unsigned long long) p->framegen_pairs,
++            (unsigned long long) p->framegen_phases,
++            (unsigned long long) p->framegen_bypasses,
++            p->framegen_motion_ns / 1e6,
++            p->framegen_warp_ns / 1e6);
++    p->framegen_stats_last_ns = now;
++}
++
 +static bool framegen_fail(struct vo *vo, const char *reason)
 +{
 +    struct priv *p = vo->priv;
@@ -293,7 +330,8 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        "  if (cost_b < best_b_cost) { best_b_cost = cost_b; best_b = candidate; }\n"
 +        " }\n"
 +        "}\n"
-+        "imageStore(fg_motion_out, block, vec4(best_f, best_b));\n";
++        "imageStore(fg_motion_out, block, vec4(best_f, best_b));\n"
++        "imageStore(fg_score_out, block, vec4(best_f_cost / 5.0, best_b_cost / 5.0, 0.0, 0.0));\n";
 +
 +    struct pl_shader_desc descriptors[] = {
 +        {
@@ -308,6 +346,10 @@ index 3f0b18f4d..d4d9c16d9 100644
 +            .desc = {.name = "fg_motion_out", .type = PL_DESC_STORAGE_IMG,
 +                     .access = PL_DESC_ACCESS_WRITEONLY},
 +            .binding = {.object = p->framegen_motion},
++        }, {
++            .desc = {.name = "fg_score_out", .type = PL_DESC_STORAGE_IMG,
++                     .access = PL_DESC_ACCESS_WRITEONLY},
++            .binding = {.object = p->framegen_score},
 +        },
 +    };
 +    pl_shader sh = pl_dispatch_begin(p->framegen_dispatch);
@@ -352,16 +394,17 @@ index 3f0b18f4d..d4d9c16d9 100644
 +
 +    int motion_w = MP_ALIGN_UP(w, 16) / 16;
 +    int motion_h = MP_ALIGN_UP(h, 16) / 16;
-+    pl_dispatch_reset_frame(p->framegen_dispatch);
 +    if (!framegen_render_source(vo, 0, first, w, h) ||
 +        !framegen_render_source(vo, 1, second, w, h) ||
 +        !framegen_recreate_tex(vo, &p->framegen_motion, motion_w, motion_h) ||
++        !framegen_recreate_tex(vo, &p->framegen_score, motion_w, motion_h) ||
 +        !framegen_dispatch_motion(vo, motion_w, motion_h))
 +        return false;
 +
 +    p->framegen_pair[0] = first_id;
 +    p->framegen_pair[1] = second_id;
 +    p->framegen_output_mask = 0;
++    p->framegen_pairs++;
 +    return true;
 +}
 +
@@ -377,6 +420,7 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        "vec2 uv = (vec2(pixel) + 0.5) / size;\n"
 +        "float t = %.9f;\n"
 +        "vec4 motion = textureLod(fg_motion, uv, 0.0);\n"
++        "vec2 score = textureLod(fg_score, uv, 0.0).rg;\n"
 +        "vec2 uv_a = uv - t * motion.xy / size;\n"
 +        "vec2 uv_b = uv - (1.0 - t) * motion.zw / size;\n"
 +        "vec4 local_a = textureLod(fg_motion, clamp(uv_a, 0.0, 1.0), 0.0);\n"
@@ -394,6 +438,9 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        "vec4 a = textureLod(fg_source_a, clamp(uv_a, 0.0, 1.0), 0.0);\n"
 +        "vec4 b = textureLod(fg_source_b, clamp(uv_b, 0.0, 1.0), 0.0);\n"
 +        "vec4 result = (wa * a + wb * b) / max(wa + wb, 1e-5);\n"
++        "float duplicate = 1.0 - smoothstep(0.001, 0.005, max(score.r, score.g));\n"
++        "float cut = smoothstep(0.08, 0.18, min(score.r, score.g));\n"
++        "result = mix(result, a, max(duplicate, cut));\n"
 +        "imageStore(fg_output, pixel, result);\n",
 +        phase / 3.0);
 +
@@ -409,6 +456,10 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        }, {
 +            .desc = {.name = "fg_motion", .type = PL_DESC_SAMPLED_TEX},
 +            .binding = {.object = p->framegen_motion,
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_score", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_score,
 +                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
 +        }, {
 +            .desc = {.name = "fg_output", .type = PL_DESC_STORAGE_IMG,
@@ -457,6 +508,8 @@ index 3f0b18f4d..d4d9c16d9 100644
 +    if (phase < 1 || phase > 2 || first < 0 || second < 0)
 +        return false;
 +
++    pl_dispatch_reset_frame(p->framegen_dispatch);
++
 +    int w = pl_rect_w(mix->frames[first]->crop);
 +    int h = pl_rect_h(mix->frames[first]->crop);
 +    if (w <= 0 || h <= 0 ||
@@ -475,6 +528,7 @@ index 3f0b18f4d..d4d9c16d9 100644
 +            !framegen_dispatch_warp(vo, phase, w, h))
 +            return false;
 +        p->framegen_output_mask |= bit;
++        p->framegen_phases++;
 +    }
 +
 +    *out = framegen_rgb_frame(p->framegen_output[phase - 1], mix->frames[first]);
@@ -482,13 +536,14 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        MP_INFO(vo, "ReKazumi Vulkan fixed 3x frame generation prototype active\n");
 +        p->framegen_announced = true;
 +    }
++    framegen_report_stats(vo);
 +    return true;
 +}
 +
  static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  {
      struct priv *p = vo->priv;
-@@ -1007,15 +1325,24 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1007,15 +1380,24 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  
      struct pl_render_params params = pars->params;
      const struct gl_video_opts *opts = p->opts_cache->opts;
@@ -516,7 +571,7 @@ index 3f0b18f4d..d4d9c16d9 100644
      if (frame->still)
          params.frame_mixer = NULL;
  
-@@ -1055,6 +1382,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1055,6 +1437,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
          if (p->want_reset) {
              pl_renderer_flush_cache(p->rr);
              pl_queue_reset(p->queue);
@@ -526,7 +581,7 @@ index 3f0b18f4d..d4d9c16d9 100644
              p->last_pts = 0.0;
              p->last_id = 0;
              p->want_reset = false;
-@@ -1242,7 +1572,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1242,7 +1627,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
              struct pl_queue_params qparams = *pl_queue_params(
                  .pts = frame->current->pts + pts_offset,
                  .radius = pl_frame_mix_radius(&params),
@@ -536,7 +591,7 @@ index 3f0b18f4d..d4d9c16d9 100644
              );
  #if PL_API_VER >= 340
              qparams.drift_compensation = 0;
-@@ -1311,7 +1642,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1311,7 +1697,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
          struct pl_queue_params qparams = *pl_queue_params(
              .pts = frame->current->pts + pts_offset,
              .radius = pl_frame_mix_radius(&params),
@@ -546,7 +601,7 @@ index 3f0b18f4d..d4d9c16d9 100644
              .interpolation_threshold = opts->interpolation_threshold,
          );
  #if PL_API_VER >= 340
-@@ -1399,8 +1731,17 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1399,8 +1786,21 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
              update_hook_opts_dynamic(p, p->hooks[i], frame->current);
      }
  
@@ -559,6 +614,10 @@ index 3f0b18f4d..d4d9c16d9 100644
 +                         framegen_generate(vo, &mix,
 +                                           frame->frame_generation_phase,
 +                                           &generated);
++    if (wants_framegen && frame->frame_generation_phase > 0 && !use_generated) {
++        p->framegen_bypasses++;
++        framegen_report_stats(vo);
++    }
 +    bool rendered = use_generated
 +                  ? pl_render_image(p->rr, &generated, &target, &params)
 +                  : pl_render_image_mix(p->rr, &mix, &target, &params);
@@ -566,7 +625,7 @@ index 3f0b18f4d..d4d9c16d9 100644
          MP_ERR(vo, "Failed rendering frame!\n");
          goto done;
      }
-@@ -1426,7 +1767,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1426,7 +1826,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
      }
      mp_mutex_unlock(&vo->params_mutex);
  
@@ -575,7 +634,7 @@ index 3f0b18f4d..d4d9c16d9 100644
      valid = true;
      // fall through
  
-@@ -2077,6 +2418,12 @@ static void uninit(struct vo *vo)
+@@ -2077,6 +2477,13 @@ static void uninit(struct vo *vo)
  {
      struct priv *p = vo->priv;
      pl_queue_destroy(&p->queue); // destroy this first
@@ -584,11 +643,12 @@ index 3f0b18f4d..d4d9c16d9 100644
 +        pl_tex_destroy(p->gpu, &p->framegen_output[i]);
 +    }
 +    pl_tex_destroy(p->gpu, &p->framegen_motion);
++    pl_tex_destroy(p->gpu, &p->framegen_score);
 +    pl_dispatch_destroy(&p->framegen_dispatch);
      for (int i = 0; i < MP_ARRAY_SIZE(p->osd_state.entries); i++)
          pl_tex_destroy(p->gpu, &p->osd_state.entries[i].tex);
      for (int i = 0; i < p->num_sub_tex; i++)
-@@ -2164,6 +2511,15 @@ static int preinit(struct vo *vo)
+@@ -2164,6 +2571,17 @@ static int preinit(struct vo *vo)
      pl_gpu_set_cache(p->gpu, p->shader_cache.cache);
      p->rr = pl_renderer_create(p->pllog, p->gpu);
      p->queue = pl_queue_create(p->gpu);
@@ -597,6 +657,8 @@ index 3f0b18f4d..d4d9c16d9 100644
 +#endif
 +    if (p->framegen_vulkan)
 +        p->framegen_dispatch = pl_dispatch_create(p->pllog, p->gpu);
++    if (p->framegen_dispatch)
++        pl_dispatch_callback(p->framegen_dispatch, p, framegen_info_callback);
 +    if (p->framegen_vulkan && !p->framegen_dispatch) {
 +        p->framegen_failed = true;
 +        MP_ERR(vo, "ReKazumi frame generation dispatch creation failed\n");
@@ -604,7 +666,7 @@ index 3f0b18f4d..d4d9c16d9 100644
      p->osd_fmt[SUBBITMAP_LIBASS] = pl_find_named_fmt(p->gpu, "r8");
      p->osd_fmt[SUBBITMAP_BGRA] = pl_find_named_fmt(p->gpu, "bgra8");
      p->osd_sync = 1;
-@@ -2529,6 +2885,9 @@ static void update_render_options(struct vo *vo)
+@@ -2529,6 +2947,9 @@ static void update_render_options(struct vo *vo)
                        (pars->params.skip_anti_aliasing ? 1 : 2);
      }
      vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));

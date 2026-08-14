@@ -1068,3 +1068,41 @@
   the same unpushed commit, then push it through the proxy and require the new
   native run to pass the marker/hash gate. The resulting hashes may be trusted
   from CI logs even if the local Azure artifact download remains unavailable.
+- The amended CI-gate commit is `79d9ab5`; push succeeded and native run
+  `31767282557` passed in 12m47s. The new pre-upload gate verified JAR layout,
+  non-empty arm64 `libmpv.so`, option/active/fail-closed markers, and absence of
+  `GL_QCOM_`, `glExtrapolateTex2DQCOM`, and `glTexEstimateMotionQCOM` before
+  uploading. JAR SHA-256 is
+  `07507dd445a979298e36c42dbb06763de39bd5ece760decd8e6224b6817368bf`;
+  contained `libmpv.so` SHA-256 is
+  `d2e291d0442dcc49322d40f0036fc74d18a0b70d2bf2e1d386b08a7a3d0891f4`.
+  Artifact id is `9206989522`, 9,090,238 bytes. Only upstream Node/action
+  deprecation annotations were reported. No local download is needed.
+- Located the pinned NDK 27.2 `glslc` and created equivalent explicit-binding
+  compute shaders under untracked `work/shader-validation`. The initial motion
+  and warp shaders compiled successfully for Vulkan 1.1 SPIR-V, proving their
+  GLSL syntax independently of the C compile. These validation files and SPIR-V
+  outputs are generated research artifacts and must not be staged.
+- Extended the isolated prototype with a second coarse-grid FP16 score texture.
+  Motion analysis writes normalized best forward/backward match costs; warp
+  holds the first original for near-duplicate blocks and high-cost/cut blocks,
+  avoiding line breathing and cross-cut fusion without reducing source/output
+  resolution. This is a local conservative per-block gate, not yet a global
+  scene classifier.
+- Added libplacebo dispatch timing callbacks and structured native counters for
+  pairs, generated phases, bypasses, motion milliseconds, and warp milliseconds.
+  Moved `pl_dispatch_reset_frame` to once per generated presentation so the
+  dispatcher advances/collects timing correctly for phase 1 and phase 2.
+- Updated the equivalent validation shaders for the score texture and bypass
+  logic. NDK 27.2 `glslc --target-env=vulkan1.1 -O` passed again; SPIR-V hashes
+  are motion `0ade46cc6017201c55c04bcf96ebe605b0d8be781db362e39c7a7d4de0325dc0`
+  and warp `f7b467bd19205d1d127a95e13e28be71d0cd81fc04b1f41252089eac0051d5b1`.
+- Regenerated the contextual mpv patch and applied it from scratch in a fourth
+  isolated pinned checkout `work/mpv-vulkan-patch-check-4`. Apply-check, actual
+  apply, and patched-source whitespace validation passed; the intended diff is
+  still limited to `vo.c`, `vo.h`, and `vo_gpu_next.c`. Next gate is another
+  upload-only arm64 compile and binary-marker check. The phone remains unused.
+- Created local commit `7ecb821` (`feat: add framegen bypass scores and timing`)
+  containing only the updated mpv patch and journal. Amend this record into the
+  same unpushed commit, push through the proxy, and require the complete native
+  compile plus binary gate before accepting the score/timing implementation.
