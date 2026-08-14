@@ -1106,3 +1106,47 @@
   containing only the updated mpv patch and journal. Amend this record into the
   same unpushed commit, push through the proxy, and require the complete native
   compile plus binary gate before accepting the score/timing implementation.
+- The amended score/timing commit is `76b94ae`; push succeeded and run
+  `31768008231` passed the full native build and binary gate in 12m22s. JAR
+  SHA-256 is
+  `1bb8020ffeadaa09b35d505a71acbe08ba2705969b0d403c22e174506177972f`;
+  contained arm64 `libmpv.so` SHA-256 is
+  `e2a95235f060afe8c09ee4213439aed9698ad75037bf9aba5974b573f651def3`.
+  Required markers were present and all rejected QCOM strings remained absent.
+  Only the known upstream action deprecation annotations appeared.
+- Reviewed HopperRender's algorithm description again without copying its
+  OpenCL source. The relevant behavior is a coarse global offset followed by
+  progressively smaller local windows. The current zero-centered per-block
+  search would miss camera pans or object motion beyond its local radius, so it
+  is not sufficient as the intended quality path.
+- Implemented a two-level open Vulkan search in the isolated source. A 33x33
+  candidate texture evaluates forward/backward global offsets from -64 to +64
+  pixels in parallel at four-pixel steps using a sparse 8x6 frame grid. A tiny
+  reduction pass selects the best bidirectional global offsets. Each 16x16
+  block then refines independently within +/-16 pixels at two-pixel steps
+  around those offsets. This keeps large motion coverage without serializing
+  roughly 200,000 texture reads onto one GPU invocation.
+- A temporary first version performed the entire global +/-64 search in one
+  compute invocation. Its GLSL compiled, but architecture review identified
+  poor GPU occupancy and long dependency chains before it was staged or built.
+  Replaced it with the parallel cost texture plus 1x1 reduction design; the
+  serial version was never committed, packaged, or run.
+- NDK 27.2 `glslc` compiled all four equivalent Vulkan 1.1 shaders. SPIR-V
+  sizes/hashes: global cost 2,736 bytes
+  `a667f1aa03199058a3709e9cc1ae72637abb3b659607acb59900acc5d4f39936`;
+  global reduce 1,844 bytes
+  `fb711da07c6b2a8a6f3265660e5eb7d9168e8c2e9128d913e2033a2852b3dff1`;
+  local motion after the final +/-16 refinement change 3,960 bytes
+  `c710386b48ff01bb393c44b046b97d539a164f9496306f4b27a6dfd32bd39613`;
+  warp 3,336 bytes
+  `f7b467bd19205d1d127a95e13e28be71d0cd81fc04b1f41252089eac0051d5b1`.
+- Regenerated the contextual patch after the final local-radius change and
+  applied it from scratch in `work/mpv-vulkan-patch-check-6`. Apply-check,
+  actual application, and patched-source whitespace validation all passed at
+  the exact pinned mpv base. Strengthened CI to require the global-cost,
+  global-reduce, and `global-ms=` markers before upload. The app runtime pin and
+  device remain untouched.
+- Created local commit `83bacc4` (`feat: add hierarchical Vulkan motion search`)
+  with only the updated mpv patch, strengthened upload-only marker gate, and
+  journal. Amend this record into that unpushed commit, push through the proxy,
+  and require the fourth native compile/binary gate before accepting it.
