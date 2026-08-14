@@ -1657,3 +1657,16 @@
   Device list remained empty afterward. This candidate is prepared but not
   installed or launched; when a device reconnects, install only this exact hash
   and leave the shield action entirely manual.
+- Device `6cb239de` (`PKX110`, Oplus 13T) reconnected. Revalidated the prepared
+  candidate at 50,284,890 bytes and exact SHA-256
+  `4507a032b339678a47508101fe04f785e4286e2a23029aa3ed05522e1ec3841e`.
+  Read-only preinstall inspection found existing `com.predidit.rekazumi`
+  versionCode 20207/versionName 2.2.7, last updated 2026-08-13 17:51:55.
+- Installed only that exact candidate with `adb install -r`; streamed install
+  returned `Success`. Postinstall package inspection shows the same intended
+  version identity and update time 2026-08-14 16:11:30. Neither the main
+  `com.predidit.rekazumi` process nor `:framegen_validation` child was running,
+  proving installation did not auto-launch the app or validation. Next action
+  belongs to the user: manually open ReKazumi, enter Logs, tap the shield, read
+  the no-playback confirmation, and choose Start validation. Do not send an app
+  launch, shield click, playback, Surface, or display-rate command remotely.
