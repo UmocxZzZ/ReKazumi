@@ -1638,3 +1638,22 @@
   49,467,880 bytes, unexpired until 2026-11-12. It remains remote and uninstalled
   at this point. Record/push this result before preparing any device candidate;
   never auto-run the shield action or enter playback.
+- Committed/pushed CI journal checkpoint `252e297`. `adb devices -l` then showed
+  no connected device, so no install was attempted. Began downloading the
+  successful CI artifact into new non-overwriting target
+  `device-build/offscreen-manual-eb40aee`; the outer command timed out after
+  124 seconds while its `gh` child remained alive, with no target or partial
+  candidate visible. A 30-second follow-up found the child still nearly idle
+  and the target absent. A grouped read-only network/process inspection then
+  failed because Windows denied CIM command-line access; a separate connection
+  query found no TCP connection for the orphan. No candidate file was changed.
+- Terminated only that stalled `gh` process (PID 18940), verified the intended
+  candidate root resolves exactly under `C:\\ReKazumi\\device-build`, created the
+  previously absent unique directory, and copied the already local/CI-validated
+  exact-source inspection APK there. Candidate path is
+  `C:\\ReKazumi\\device-build\\offscreen-manual-eb40aee\\ReKazumi-offscreen-manual-eb40aee.apk`,
+  size 50,284,890 bytes, SHA-256
+  `4507a032b339678a47508101fe04f785e4286e2a23029aa3ed05522e1ec3841e`.
+  Device list remained empty afterward. This candidate is prepared but not
+  installed or launched; when a device reconnects, install only this exact hash
+  and leave the shield action entirely manual.
