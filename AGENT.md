@@ -1293,3 +1293,27 @@
   commit `233bc9d` (`perf: parallelize Vulkan block motion search`). Amend this
   result into the still-unpushed commit, push through `mixed:10808`, and monitor
   the resulting native compile/binary gate to completion.
+- The amended parallel-search commit is `45348d0`; push through the proxy
+  succeeded and started upload-only run `31770325073` at exact head
+  `45348d02fc3cbffb87726822bfdaccf6e97612d5`. The PR workflow was skipped as
+  expected. Eight bounded 59-second local watch windows expired while the
+  remote native compilation continued; explicit status checks consistently
+  showed the same compile step active with all predecessors successful. These
+  were observation timeouts, not eight CI failures, and no retry run was
+  created.
+- Run `31770325073` completed successfully in 11m33s. Arm64 compilation, both
+  new `ReKazumi block motion cost/reduce` markers, helper/global/timing/failure
+  markers, rejected-QCOM absence, and artifact upload all passed. JAR SHA-256
+  is `f0825d6f77c399ad8d0f7778567be653ba4fdd9dd849ccb44e83a4d55b015847`;
+  contained `libmpv.so` SHA-256 is
+  `aa1960e563be4da24959991bbcede5048456c4f85a12f39e92da7694fab925e6`.
+  Artifact id `9208081251` is 9,092,358 bytes and unexpired. This accepts the
+  parallelized/RG16F source as compile- and marker-valid only; it remains
+  unpinned, uninstalled, and unavailable in Dart.
+- Updated `docs/frame-generation-architecture.md` with the exact current
+  off-device prototype: source-timed phases, same-device helper renderer,
+  parallel global/local search, RG16F scratch budget, consistency/bypass logic,
+  timing, fail-closed behavior, and the distinction between native CI and
+  device safety. This documentation change does not enable any runtime path.
+  Planned Git operation: commit only this documentation plus the accumulated
+  journal, leaving all unrelated/generated paths untouched, then push it.
