@@ -5,31 +5,22 @@ arm64 runtime is a safety rollback: both proprietary Qualcomm GLES
 frame-generation extensions are disabled after device-level failures on the
 OPlus 13T / Adreno 830 reference device.
 
-The former `GL_QCOM_motion_estimation` experiment remains documented below for
-postmortem value, but the runtime does not discover its entry point, cannot
-schedule 3x phases without a validated backend, and falls back to ordinary
-source-rate playback.
+The former Qualcomm experiments remain historical only. The new off-device
+prototype targets mpv `gpu-next` and uses libplacebo's existing Vulkan device,
+queue, resource tracking, and shader dispatch. It does not create another
+`VkDevice`, perform CPU readback, invoke ncnn, or retrieve a model at runtime.
 
-The implementation keeps the current and next original frames as GPU textures.
-It estimates both current-to-next and next-to-current motion, then synthesizes
-`t=1/3` and `t=2/3` with inverse warping and forward/backward consistency
-weights. Each generated phase is cached as part of a fixed three-phase
-sequence. A 120 Hz display only holds these phases; it does not increase the
-generation factor.
+The prototype converts the current and next original frames to persistent
+source-resolution FP16 RGB textures, computes a coarse bidirectional block
+motion field, and synthesizes `t=1/3` and `t=2/3` with inverse warping plus
+forward/backward consistency weights. Generated textures are never temporal
+inputs. Anime4K remains in the final gpu-next render path after synthesis.
 
-Motion estimation runs after mpv's source-frame shaders in the same OpenGL ES
-context. This keeps Anime4K and frame generation GPU-resident and removes the
-former CPU video-filter, ncnn, Vulkan upload/readback, and model distribution
-path. The mpv, Anime4K, and synthesized presentation surfaces remain at full
-resolution in the existing FP16 path. Two GPU passes create block-aligned R8
-luma analysis textures, as required by the extension, and hardware writes the
-forward/backward vectors to RGBA16F textures for the synthesis shader.
-
-The Android player selects `vo=gpu`, the `android` EGL context, and keeps
-`video-sync=audio`. The patched VO retains original-frame history and submits
-the original/1/3/2/3 phases against the source frame's realtime PTS. It never
-changes mpv's media clock. If a generated phase misses its deadline it is
-dropped instead of being presented in a catch-up burst.
+The VO scheduler uses source PTS and keeps `video-sync=audio`. It presents only
+original/1/3/2/3 phases; 120 Hz does not increase the generation factor. Late
+optional phases are dropped instead of being submitted in a catch-up burst.
+Allocation, shader creation, or dispatch failure disables generation for that
+VO session and falls back to the original frame.
 
 Do not restore either `GL_QCOM_motion_estimation` or
 `GL_QCOM_frame_extrapolation` on the reference
@@ -44,5 +35,7 @@ synchronized, validated Android/Vulkan architecture and fail closed on any GPU
 or presentation error.
 
 The GitHub workflow installs
-`patches/mpv/0002-add-adreno-afme-frame-generation.patch` into the pinned build
-and publishes the arm64 JAR used by ReKazumi.
+`patches/mpv/0002-add-rekazumi-vulkan-frame-generation.patch` into the pinned
+build and uploads an arm64 prototype artifact. It cannot publish or replace the
+known-safe app runtime. ReKazumi's Dart capability gate remains fail-closed, so
+this artifact is not selectable, packaged, installed, or run on the phone.

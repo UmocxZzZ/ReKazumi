@@ -15,8 +15,8 @@ cd "$buildscripts"
 ./download.sh
 
 install -m 0644 \
-  "$rekazumi_root/native/libmpv/patches/mpv/0002-add-adreno-afme-frame-generation.patch" \
-  "$buildscripts/patches/mpv/0002-add-adreno-afme-frame-generation.patch"
+  "$rekazumi_root/native/libmpv/patches/mpv/0002-add-rekazumi-vulkan-frame-generation.patch" \
+  "$buildscripts/patches/mpv/0002-add-rekazumi-vulkan-frame-generation.patch"
 
 ./patch.sh
 
@@ -42,7 +42,7 @@ cp "$buildscripts"/prefix/arm64-v8a/usr/local/lib/*.so \
 
 find "$package_root" -exec touch -d "2025-01-01 00:00:00" {} +
 
-output="$buildscripts/rekazumi-afme-arm64-v8a.jar"
+output="$buildscripts/rekazumi-vulkan-framegen-prototype-arm64-v8a.jar"
 rm -f "$output"
 pushd "$package_root" >/dev/null
 find lib/arm64-v8a -type f | sort | zip -r -X "$output" -@

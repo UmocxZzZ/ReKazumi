@@ -924,3 +924,109 @@
   and journal. Amend this operation record into the same unpushed docs commit;
   then push through the proxy. These paths do not trigger Android CI, whose
   source revision `1d14a0b` has already passed the complete gate.
+
+### Single-device gpu-next prototype (2026-08-14)
+
+- Documentation commit was amended to final id `9134d68` and pushed. The next
+  implementation remains off-device: no APK installation, app launch, playback,
+  display-rate change, or adb command is authorized while building the first
+  Vulkan prototype.
+- Cloned pinned libplacebo read-only into untracked
+  `work/references/libplacebo` at exact commit
+  `d4624cbfb37fdef337a7da5794b66202671a89cd`. The proxy transfer completed in
+  about 173 seconds. Like the other approved network clones, its host ownership
+  triggers Git's sandbox-side dubious-ownership check; use only an exact
+  command-local `safe.directory` for revision/status reads and never weaken the
+  global Git safety configuration.
+- An attempt to clone the existing local `work/mpv` into a clean prototype tree
+  failed before creating the destination because Git also rejected that source
+  repository's inner `.git` ownership. This did not modify the dirty QCOM
+  experiment. Recovery downloaded a new isolated upstream mpv checkout through
+  `mixed:10808` into untracked `work/mpv-open-framegen`, detached at the pinned
+  base `32a164cc017acab50389f2194f720ccfd0b01a28`. Its clean status and revision
+  were confirmed with an exact command-local safe-directory value.
+- Read-only safe-runtime string inspection confirmed `gpu-next`, libplacebo,
+  Vulkan, and Android Vulkan hardware-decode support. The search utility returned
+  exit code 1 despite printing the requested matches because one alternative had
+  no match; this is a command-result interpretation mistake, not evidence that
+  the useful symbols are missing.
+- Mapped the fixed-3x insertion point in clean `vo_gpu_next`: mpv already queues
+  original source frames into `pl_queue`, obtains a `pl_frame_mix`, and renders
+  once through libplacebo. The rejected dirty tree's scheduler is useful only as
+  timing evidence; its QCOM code must not be copied. The clean implementation
+  will request the next original, select exact source-pair phases 1/3 and 2/3,
+  generate offscreen textures on gpu-next's existing `pl_gpu`/queue, and retain
+  exactly one final swapchain presentation per phase.
+- The first targeted libplacebo API search included a nonexistent top-level
+  `tests` directory, so `rg` returned exit code 1 after producing useful hits.
+  The actual tests live under `src/tests`; repeated inspection against public
+  headers and concrete examples succeeded. Pinned APIs support this design:
+  `pl_dispatch_begin`, `pl_shader_custom`, sampled/storage descriptors,
+  `pl_dispatch_compute`, and `pl_tex_recreate`. No private Vulkan device or
+  second queue is required.
+- Planned prototype boundary: first add a model-free, full-resolution
+  bidirectional warp/blend compute pass with a bounded coarse block-search
+  motion field, but keep activation impossible in the shipped app until native
+  build, marker/hash, pacing, failure, and visual tests pass. Any allocation,
+  shader compilation, or dispatch failure must bypass to the original frame;
+  generated frames may never become temporal inputs.
+- Implemented the first isolated mpv prototype in `work/mpv-open-framegen`.
+  Source-timed VO scheduling repeats each eligible source interval exactly three
+  times at original/1/3/2/3 PTS, drops missed optional phases instead of
+  bursting, and requests the next original without enabling display-sync or
+  changing the media clock. The gpu-next path reuses libplacebo's current/next
+  mapped originals, never a generated texture.
+- The offscreen algorithm uses source-resolution FP16 RGB inputs, one 16x16
+  coarse bidirectional block-motion field with a bounded +/-12-pixel search,
+  and two full-resolution compute warps with forward/backward consistency
+  weights. The generated RGB frame then returns to gpu-next's normal final
+  render, keeping Anime4K/upscale after synthesis. This is the first compile
+  prototype, not yet the final hierarchical search, duplicate/cut classifier,
+  performance result, or device-approved backend.
+- Reused the existing `pl_gpu` and libplacebo dispatch so resource barriers and
+  queue submission stay in the same backend. No Vulkan instance/device/queue,
+  AHardwareBuffer bridge, CPU readback, JNI frame transfer, model file, or
+  runtime download was added. Allocation, source conversion, shader creation,
+  and dispatch failures set a sticky VO failure and force future scheduling
+  back to multiplier 1.
+- The first automated `apply_patch` attempt to replace the tracked historical
+  patch failed atomically because the generated patch text did not place
+  `*** End Patch` on its own final line. No tracked file changed in that attempt.
+  Corrected the patch framing and created
+  `0002-add-rekazumi-vulkan-frame-generation.patch`, removing the old QCOM-named
+  patch from the build path.
+- Converted the native workflow into an upload-only Vulkan prototype build:
+  it now has read-only repository permission, has no release-publication input
+  or step, and writes a distinct prototype JAR name. It therefore cannot
+  overwrite the known-safe `afme-runtime-v1` asset. The app plugin remains
+  pinned to the safe fail-closed JAR and Dart still marks 3x unavailable.
+- Created a second isolated clean mpv checkout at the exact pinned base under
+  untracked `work/mpv-vulkan-patch-check`. The local clone succeeded only with
+  exact command-local safe-directory values for the source worktree and its
+  `.git`; global Git safety was unchanged. `git apply --check`, actual apply,
+  and `git diff --check` all passed, producing only the intended three mpv
+  source changes. Next gate is an arm64 native compile in GitHub Actions; no APK
+  packaging, installation, phone launch, or playback is part of that gate.
+- Staging validation reported trailing-whitespace warnings only on embedded
+  unified-diff blank context lines (`" "`) inside the new `.patch` file; the
+  patched C sources themselves pass `git diff --check`. An attempted
+  zero-context (`--unified=0`) regeneration removed those cosmetic container
+  warnings but proved too fragile: reverse/apply checks failed at several hunks.
+  The combined PowerShell validation continued after those failures and ended
+  with exit code 0 because its final command succeeded, so the visible per-step
+  errors—not the aggregate exit code—were used. Restored the conventional
+  three-line-context patch and discarded the zero-context variant.
+- Created a fresh third isolated checkout
+  `work/mpv-vulkan-patch-check-2` rather than trusting the ambiguous prior
+  validation tree. The restored contextual patch again passed apply-check,
+  actual application, patched-source whitespace validation, and intended
+  three-file diff statistics. Patch-container blank-context warnings are
+  accepted as standard unified-diff syntax; they are not source whitespace.
+- Created local commit `f509f7c` (`feat: prototype Vulkan frame generation in
+  gpu-next`) with only the upload-only workflow, native build script/README,
+  replacement mpv patch, and this journal. The unchanged-content
+  `pubspec.lock` and all generated/reference directories remain excluded.
+  Amend this operation record into the same unpushed commit, then push through
+  `mixed:10808`. The push may start only the isolated native compile workflow;
+  that workflow has no release write permission and must not be treated as a
+  device-ready runtime even if compilation succeeds.

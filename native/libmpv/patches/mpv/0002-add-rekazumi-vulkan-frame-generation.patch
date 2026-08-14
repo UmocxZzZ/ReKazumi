@@ -1,0 +1,616 @@
+diff --git a/video/out/vo.c b/video/out/vo.c
+index 959371266..1de36af3b 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -171,6 +171,7 @@ struct vo_internal {
+     bool rendering;                 // true if an image is being rendered
+     struct vo_frame *frame_queued;  // should be drawn next
+     int req_frames;                 // VO's requested value of num_frames
++    int frame_generation_multiplier;// independent source-timed presentations
+     uint64_t current_frame_id;
+ 
+     double display_fps;
+@@ -881,6 +882,15 @@ void vo_queue_frame(struct vo *vo, struct vo_frame *frame)
+            (!in->current_frame || in->current_frame->num_vsyncs < 1));
+     in->hasframe = true;
+     frame->frame_id = ++(in->current_frame_id);
++    frame->frame_generation_multiplier = in->frame_generation_multiplier;
++    frame->frame_generation_phase = 0;
++    if (!frame->display_synced && frame->frame_generation_multiplier > 1 &&
++        frame->duration > 0 && frame->num_frames > 1)
++    {
++        frame->num_vsyncs = frame->frame_generation_multiplier;
++    } else {
++        frame->frame_generation_multiplier = 1;
++    }
+     in->frame_queued = frame;
+     in->wakeup_pts = frame->display_synced
+                    ? 0 : frame->pts + MPMAX(frame->duration, 0);
+@@ -938,7 +948,9 @@ static bool render_frame(struct vo *vo)
+         in->frame_queued = NULL;
+     } else if (in->paused || !in->current_frame || !in->hasframe ||
+                (in->current_frame->display_synced && in->current_frame->num_vsyncs < 1) ||
+-               !in->current_frame->display_synced)
++               (!in->current_frame->display_synced &&
++                in->current_frame->frame_generation_multiplier <= 1) ||
++               in->current_frame->num_vsyncs < 1)
+     {
+         goto done;
+     }
+@@ -954,6 +966,15 @@ static bool render_frame(struct vo *vo)
+     int64_t now = mp_time_ns();
+     int64_t pts = frame->pts;
+     int64_t duration = frame->duration;
++    bool source_timed_generation = !frame->display_synced &&
++                                   frame->frame_generation_multiplier > 1;
++    if (source_timed_generation) {
++        frame->frame_generation_phase = frame->frame_generation_multiplier -
++                                        frame->num_vsyncs;
++        pts += frame->frame_generation_phase * duration /
++               frame->frame_generation_multiplier;
++        frame->pts = pts;
++    }
+     int64_t end_time = pts + duration;
+ 
+     // Time at which we should flip_page on the VO.
+@@ -962,13 +983,21 @@ static bool render_frame(struct vo *vo)
+     // "normal" strict drop threshold.
+     in->dropped_frame = duration >= 0 && end_time < now;
+ 
++    // Intermediate phases are optional. Drop a missed phase instead of
++    // presenting several generated frames in a catch-up burst.
++    bool drop_optional_phase = source_timed_generation &&
++        frame->frame_generation_phase > 0 &&
++        now > pts + MP_TIME_MS_TO_NS(2);
++
+     in->dropped_frame &= !frame->display_synced;
+     in->dropped_frame &= !(vo->driver->caps & VO_CAP_FRAMEDROP);
+     in->dropped_frame &= frame->can_drop;
+     // Even if we're hopelessly behind, rather degrade to 10 FPS playback,
+     // instead of just freezing the display forever.
+-    in->dropped_frame &= now - in->prev_vsync < MP_TIME_MS_TO_NS(100);
++    if (!source_timed_generation || frame->frame_generation_phase == 0)
++        in->dropped_frame &= now - in->prev_vsync < MP_TIME_MS_TO_NS(100);
+     in->dropped_frame &= in->hasframe_rendered;
++    in->dropped_frame |= drop_optional_phase;
+ 
+     // Setup parameters for the next time this frame is drawn. ("frame" is the
+     // frame currently drawn, while in->current_frame is the potentially next.)
+@@ -1064,7 +1093,8 @@ static bool render_frame(struct vo *vo)
+     }
+ 
+     if (in->current_frame && in->current_frame->num_vsyncs &&
+-        in->current_frame->display_synced)
++        (in->current_frame->display_synced ||
++         in->current_frame->frame_generation_multiplier > 1))
+         more_frames = true;
+ 
+     if (in->frame_queued && in->frame_queued->display_synced)
+@@ -1350,6 +1380,14 @@ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames)
+     mp_mutex_unlock(&in->lock);
+ }
+ 
++void vo_set_frame_generation(struct vo *vo, int multiplier)
++{
++    struct vo_internal *in = vo->in;
++    mp_mutex_lock(&in->lock);
++    in->frame_generation_multiplier = MPCLAMP(multiplier, 1, 3);
++    mp_mutex_unlock(&in->lock);
++}
++
+ int vo_get_num_req_frames(struct vo *vo)
+ {
+     struct vo_internal *in = vo->in;
+diff --git a/video/out/vo.h b/video/out/vo.h
+index a98b0f949..ae3e71cee 100644
+--- a/video/out/vo.h
++++ b/video/out/vo.h
+@@ -259,6 +259,10 @@ struct vo_frame {
+     bool still;
+     // Frames are output as fast as possible, with implied vsync blocking.
+     bool display_synced;
++    // Source-timed frame generation is independent from display-sync. Phase 0
++    // is the original frame and phases 1/2 are fixed 1/3 and 2/3 outputs.
++    int frame_generation_multiplier;
++    int frame_generation_phase;
+     // Dropping the frame is allowed if the VO is behind.
+     bool can_drop;
+     // The current frame to be drawn.
+@@ -550,6 +554,7 @@ void vo_event(struct vo *vo, int event);
+ int vo_query_and_reset_events(struct vo *vo, int events);
+ struct mp_image *vo_get_current_frame(struct vo *vo);
+ void vo_set_queue_params(struct vo *vo, int64_t offset_ns, int num_req_frames);
++void vo_set_frame_generation(struct vo *vo, int multiplier);
+ int vo_get_num_req_frames(struct vo *vo);
+ double vo_get_vsync_interval(struct vo *vo);
+ double vo_get_estimated_vsync_interval(struct vo *vo);
+diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
+index 3f0b18f4d..d4d9c16d9 100644
+--- a/video/out/vo_gpu_next.c
++++ b/video/out/vo_gpu_next.c
+@@ -21,13 +21,19 @@
+ #include <time.h>
+ 
+ #include <libplacebo/colorspace.h>
++#include <libplacebo/dispatch.h>
+ #include <libplacebo/options.h>
+ #include <libplacebo/renderer.h>
++#include <libplacebo/shaders/custom.h>
+ #include <libplacebo/shaders/lut.h>
+ #include <libplacebo/shaders/icc.h>
+ #include <libplacebo/utils/libav.h>
+ #include <libplacebo/utils/frame_queue.h>
+ 
++#if HAVE_VULKAN
++#include <libplacebo/vulkan.h>
++#endif
++
+ #include "config.h"
+ #include "common/common.h"
+ #include "misc/io_utils.h"
+@@ -120,6 +126,15 @@ struct priv {
+     pl_renderer rr;
+     pl_queue queue;
+     pl_swapchain sw;
++    pl_dispatch framegen_dispatch;
++    pl_tex framegen_source[2];
++    pl_tex framegen_motion;
++    pl_tex framegen_output[2];
++    uint64_t framegen_pair[2];
++    unsigned framegen_output_mask;
++    bool framegen_vulkan;
++    bool framegen_failed;
++    bool framegen_announced;
+     pl_fmt osd_fmt[SUBBITMAP_COUNT];
+     pl_tex *sub_tex;
+     int num_sub_tex;
+@@ -171,6 +186,7 @@ struct gl_next_opts {
+     float background_blur_radius;
+     float corner_rounding;
+     bool inter_preserve;
++    bool frame_generation;
+     struct user_lut lut;
+     struct user_lut image_lut;
+     struct user_lut target_lut;
+@@ -208,6 +224,7 @@ const struct m_sub_options gl_next_conf = {
+ #endif
+         {"corner-rounding", OPT_FLOAT(corner_rounding), M_RANGE(0, 1)},
+         {"interpolation-preserve", OPT_BOOL(inter_preserve)},
++        {"rekazumi-frame-generation", OPT_BOOL(frame_generation)},
+         {"lut", OPT_STRING(lut.opt), .flags = M_OPT_FILE},
+         {"lut-type", OPT_CHOICE_C(lut.type, lut_types)},
+         {"image-lut", OPT_STRING(image_lut.opt), .flags = M_OPT_FILE},
+@@ -998,6 +1015,307 @@ static enum pl_color_primaries get_best_prim_container(const struct pl_raw_prima
+ static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
+                                      const struct mp_image *mpi);
+ 
++static bool framegen_fail(struct vo *vo, const char *reason)
++{
++    struct priv *p = vo->priv;
++    if (!p->framegen_failed)
++        MP_ERR(vo, "ReKazumi frame generation disabled: %s\n", reason);
++    p->framegen_failed = true;
++    vo_set_frame_generation(vo, 1);
++    return false;
++}
++
++static pl_fmt framegen_format(struct priv *p)
++{
++    enum pl_fmt_caps caps = PL_FMT_CAP_SAMPLEABLE | PL_FMT_CAP_RENDERABLE |
++                            PL_FMT_CAP_STORABLE;
++    return pl_find_fmt(p->gpu, PL_FMT_FLOAT, 4, 16, 0, caps);
++}
++
++static bool framegen_recreate_tex(struct vo *vo, pl_tex *tex, int w, int h)
++{
++    struct priv *p = vo->priv;
++    pl_fmt format = framegen_format(p);
++    if (!format)
++        return framegen_fail(vo, "no sampleable/renderable/storable FP16 format");
++
++    if (!pl_tex_recreate(p->gpu, tex, pl_tex_params(
++            .w = w,
++            .h = h,
++            .format = format,
++            .sampleable = true,
++            .renderable = true,
++            .storable = true)))
++        return framegen_fail(vo, "offscreen texture allocation failed");
++    return true;
++}
++
++static struct pl_frame framegen_rgb_frame(pl_tex tex,
++                                           const struct pl_frame *reference)
++{
++    struct pl_frame frame = {
++        .num_planes = 1,
++        .planes = {{
++            .texture = tex,
++            .components = 4,
++            .component_mapping = {0, 1, 2, 3},
++        }},
++        .repr = {
++            .sys = PL_COLOR_SYSTEM_RGB,
++            .levels = PL_COLOR_LEVELS_FULL,
++            .alpha = PL_ALPHA_INDEPENDENT,
++        },
++        .color = reference->color,
++        .crop = {0, 0, tex->params.w, tex->params.h},
++    };
++    return frame;
++}
++
++static bool framegen_render_source(struct vo *vo, int index,
++                                   const struct pl_frame *source, int w, int h)
++{
++    struct priv *p = vo->priv;
++    if (!framegen_recreate_tex(vo, &p->framegen_source[index], w, h))
++        return false;
++
++    struct pl_frame input = *source;
++    input.num_overlays = 0;
++    struct pl_frame target = framegen_rgb_frame(p->framegen_source[index], source);
++    struct pl_render_params params = pl_render_default_params;
++    params.skip_caching_single_frame = false;
++    params.preserve_mixing_cache = true;
++    if (!pl_render_image(p->rr, &input, &target, &params))
++        return framegen_fail(vo, "source RGB conversion failed");
++    return true;
++}
++
++static bool framegen_dispatch_motion(struct vo *vo, int motion_w, int motion_h)
++{
++    struct priv *p = vo->priv;
++    static const char motion_header[] =
++        "float fg_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n";
++    static const char motion_body[] =
++        "ivec2 block = ivec2(gl_GlobalInvocationID.xy);\n"
++        "ivec2 field_size = imageSize(fg_motion_out);\n"
++        "if (any(greaterThanEqual(block, field_size))) return;\n"
++        "ivec2 image_size = textureSize(fg_source_a, 0);\n"
++        "vec2 px = 1.0 / vec2(image_size);\n"
++        "vec2 center = (vec2(block) + 0.5) / vec2(field_size);\n"
++        "vec2 best_f = vec2(0.0), best_b = vec2(0.0);\n"
++        "float best_f_cost = 1e20, best_b_cost = 1e20;\n"
++        "const vec2 taps[5] = vec2[5](vec2(0.0), vec2(-4.0, 0.0), "
++        "vec2(4.0, 0.0), vec2(0.0, -4.0), vec2(0.0, 4.0));\n"
++        "for (int cy = -12; cy <= 12; cy += 2) {\n"
++        " for (int cx = -12; cx <= 12; cx += 2) {\n"
++        "  vec2 candidate = vec2(cx, cy);\n"
++        "  float cost_f = 0.0, cost_b = 0.0;\n"
++        "  for (int tap = 0; tap < 5; tap++) {\n"
++        "   vec2 base = taps[tap] * px;\n"
++        "   float a0 = fg_luma(textureLod(fg_source_a, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
++        "   float b0 = fg_luma(textureLod(fg_source_b, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
++        "   float ac = fg_luma(textureLod(fg_source_a, clamp(center + base + candidate * px, 0.0, 1.0), 0.0).rgb);\n"
++        "   float bc = fg_luma(textureLod(fg_source_b, clamp(center + base + candidate * px, 0.0, 1.0), 0.0).rgb);\n"
++        "   cost_f += abs(a0 - bc);\n"
++        "   cost_b += abs(b0 - ac);\n"
++        "  }\n"
++        "  cost_f += 0.001 * length(candidate);\n"
++        "  cost_b += 0.001 * length(candidate);\n"
++        "  if (cost_f < best_f_cost) { best_f_cost = cost_f; best_f = candidate; }\n"
++        "  if (cost_b < best_b_cost) { best_b_cost = cost_b; best_b = candidate; }\n"
++        " }\n"
++        "}\n"
++        "imageStore(fg_motion_out, block, vec4(best_f, best_b));\n";
++
++    struct pl_shader_desc descriptors[] = {
++        {
++            .desc = {.name = "fg_source_a", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_source[0],
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_source_b", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_source[1],
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_motion_out", .type = PL_DESC_STORAGE_IMG,
++                     .access = PL_DESC_ACCESS_WRITEONLY},
++            .binding = {.object = p->framegen_motion},
++        },
++    };
++    pl_shader sh = pl_dispatch_begin(p->framegen_dispatch);
++    if (!pl_shader_custom(sh, &(struct pl_custom_shader) {
++            .header = motion_header,
++            .description = "ReKazumi coarse bidirectional block motion",
++            .body = motion_body,
++            .output = PL_SHADER_SIG_NONE,
++            .descriptors = descriptors,
++            .num_descriptors = MP_ARRAY_SIZE(descriptors),
++            .compute = true,
++            .compute_group_size = {8, 8},
++            .output_w = motion_w,
++            .output_h = motion_h,
++        }))
++    {
++        pl_dispatch_abort(p->framegen_dispatch, &sh);
++        return framegen_fail(vo, "motion shader creation failed");
++    }
++
++    if (!pl_dispatch_compute(p->framegen_dispatch, pl_dispatch_compute_params(
++            .shader = &sh,
++            .dispatch_size = {MP_ALIGN_UP(motion_w, 8) / 8,
++                              MP_ALIGN_UP(motion_h, 8) / 8, 1},
++            .width = motion_w,
++            .height = motion_h)))
++        return framegen_fail(vo, "motion shader dispatch failed");
++    return true;
++}
++
++static bool framegen_prepare_pair(struct vo *vo, const struct pl_frame *first,
++                                  const struct pl_frame *second,
++                                  uint64_t first_id, uint64_t second_id,
++                                  int w, int h)
++{
++    struct priv *p = vo->priv;
++    if (p->framegen_failed || !p->framegen_vulkan || !p->framegen_dispatch)
++        return false;
++    if (p->framegen_pair[0] == first_id && p->framegen_pair[1] == second_id &&
++        p->framegen_motion)
++        return true;
++
++    int motion_w = MP_ALIGN_UP(w, 16) / 16;
++    int motion_h = MP_ALIGN_UP(h, 16) / 16;
++    pl_dispatch_reset_frame(p->framegen_dispatch);
++    if (!framegen_render_source(vo, 0, first, w, h) ||
++        !framegen_render_source(vo, 1, second, w, h) ||
++        !framegen_recreate_tex(vo, &p->framegen_motion, motion_w, motion_h) ||
++        !framegen_dispatch_motion(vo, motion_w, motion_h))
++        return false;
++
++    p->framegen_pair[0] = first_id;
++    p->framegen_pair[1] = second_id;
++    p->framegen_output_mask = 0;
++    return true;
++}
++
++static bool framegen_dispatch_warp(struct vo *vo, int phase, int w, int h)
++{
++    struct priv *p = vo->priv;
++    char body[4096];
++    snprintf(body, sizeof(body),
++        "ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);\n"
++        "ivec2 image_size = imageSize(fg_output);\n"
++        "if (any(greaterThanEqual(pixel, image_size))) return;\n"
++        "vec2 size = vec2(image_size);\n"
++        "vec2 uv = (vec2(pixel) + 0.5) / size;\n"
++        "float t = %.9f;\n"
++        "vec4 motion = textureLod(fg_motion, uv, 0.0);\n"
++        "vec2 uv_a = uv - t * motion.xy / size;\n"
++        "vec2 uv_b = uv - (1.0 - t) * motion.zw / size;\n"
++        "vec4 local_a = textureLod(fg_motion, clamp(uv_a, 0.0, 1.0), 0.0);\n"
++        "vec4 local_b = textureLod(fg_motion, clamp(uv_b, 0.0, 1.0), 0.0);\n"
++        "vec4 peer_a = textureLod(fg_motion, clamp(uv_a + local_a.xy / size, 0.0, 1.0), 0.0);\n"
++        "vec4 peer_b = textureLod(fg_motion, clamp(uv_b + local_b.zw / size, 0.0, 1.0), 0.0);\n"
++        "float err_a = length(local_a.xy + peer_a.zw);\n"
++        "float err_b = length(local_b.zw + peer_b.xy);\n"
++        "float conf_a = 1.0 - smoothstep(1.0, 4.0, err_a);\n"
++        "float conf_b = 1.0 - smoothstep(1.0, 4.0, err_b);\n"
++        "float inside_a = all(greaterThanEqual(uv_a, vec2(0.0))) && all(lessThanEqual(uv_a, vec2(1.0))) ? 1.0 : 0.0;\n"
++        "float inside_b = all(greaterThanEqual(uv_b, vec2(0.0))) && all(lessThanEqual(uv_b, vec2(1.0))) ? 1.0 : 0.0;\n"
++        "float wa = (1.0 - t) * inside_a * (0.05 + 0.95 * conf_a);\n"
++        "float wb = t * inside_b * (0.05 + 0.95 * conf_b);\n"
++        "vec4 a = textureLod(fg_source_a, clamp(uv_a, 0.0, 1.0), 0.0);\n"
++        "vec4 b = textureLod(fg_source_b, clamp(uv_b, 0.0, 1.0), 0.0);\n"
++        "vec4 result = (wa * a + wb * b) / max(wa + wb, 1e-5);\n"
++        "imageStore(fg_output, pixel, result);\n",
++        phase / 3.0);
++
++    struct pl_shader_desc descriptors[] = {
++        {
++            .desc = {.name = "fg_source_a", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_source[0],
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_source_b", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_source[1],
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_motion", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_motion,
++                        .sample_mode = PL_TEX_SAMPLE_LINEAR},
++        }, {
++            .desc = {.name = "fg_output", .type = PL_DESC_STORAGE_IMG,
++                     .access = PL_DESC_ACCESS_WRITEONLY},
++            .binding = {.object = p->framegen_output[phase - 1]},
++        },
++    };
++    pl_shader sh = pl_dispatch_begin(p->framegen_dispatch);
++    if (!pl_shader_custom(sh, &(struct pl_custom_shader) {
++            .description = phase == 1 ? "ReKazumi warp 1/3" : "ReKazumi warp 2/3",
++            .body = body,
++            .output = PL_SHADER_SIG_NONE,
++            .descriptors = descriptors,
++            .num_descriptors = MP_ARRAY_SIZE(descriptors),
++            .compute = true,
++            .compute_group_size = {8, 8},
++            .output_w = w,
++            .output_h = h,
++        }))
++    {
++        pl_dispatch_abort(p->framegen_dispatch, &sh);
++        return framegen_fail(vo, "warp shader creation failed");
++    }
++
++    if (!pl_dispatch_compute(p->framegen_dispatch, pl_dispatch_compute_params(
++            .shader = &sh,
++            .dispatch_size = {MP_ALIGN_UP(w, 8) / 8,
++                              MP_ALIGN_UP(h, 8) / 8, 1},
++            .width = w,
++            .height = h)))
++        return framegen_fail(vo, "warp shader dispatch failed");
++    return true;
++}
++
++static bool framegen_generate(struct vo *vo, const struct pl_frame_mix *mix,
++                              int phase, struct pl_frame *out)
++{
++    struct priv *p = vo->priv;
++    int first = -1, second = -1;
++    for (int i = 0; i < mix->num_frames; i++) {
++        if (mix->timestamps[i] <= 0.0f)
++            first = i;
++        else if (second < 0)
++            second = i;
++    }
++    if (phase < 1 || phase > 2 || first < 0 || second < 0)
++        return false;
++
++    int w = pl_rect_w(mix->frames[first]->crop);
++    int h = pl_rect_h(mix->frames[first]->crop);
++    if (w <= 0 || h <= 0 ||
++        w != (int) pl_rect_w(mix->frames[second]->crop) ||
++        h != (int) pl_rect_h(mix->frames[second]->crop))
++        return framegen_fail(vo, "source pair dimensions do not match");
++
++    if (!framegen_prepare_pair(vo, mix->frames[first], mix->frames[second],
++                               mix->signatures[first], mix->signatures[second],
++                               w, h))
++        return false;
++
++    unsigned bit = 1u << (phase - 1);
++    if (!(p->framegen_output_mask & bit)) {
++        if (!framegen_recreate_tex(vo, &p->framegen_output[phase - 1], w, h) ||
++            !framegen_dispatch_warp(vo, phase, w, h))
++            return false;
++        p->framegen_output_mask |= bit;
++    }
++
++    *out = framegen_rgb_frame(p->framegen_output[phase - 1], mix->frames[first]);
++    if (!p->framegen_announced) {
++        MP_INFO(vo, "ReKazumi Vulkan fixed 3x frame generation prototype active\n");
++        p->framegen_announced = true;
++    }
++    return true;
++}
++
+ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ {
+     struct priv *p = vo->priv;
+@@ -1007,15 +1325,24 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+ 
+     struct pl_render_params params = pars->params;
+     const struct gl_video_opts *opts = p->opts_cache->opts;
++    bool wants_framegen = p->next_opts->frame_generation &&
++                          p->framegen_vulkan && !p->framegen_failed &&
++                          frame->frame_generation_multiplier == 3 &&
++                          !frame->still && frame->num_frames > 1;
+     bool will_redraw = frame->display_synced && frame->num_vsyncs > 1;
+     bool cache_frame = will_redraw || frame->still;
+-    bool can_interpolate = opts->interpolation && frame->display_synced &&
+-                           !frame->still && frame->num_frames > 1;
+-    double pts_offset = can_interpolate ? frame->ideal_frame_vsync : 0;
++    bool can_interpolate = (opts->interpolation && frame->display_synced &&
++                            !frame->still && frame->num_frames > 1) ||
++                           wants_framegen;
++    double pts_offset = wants_framegen
++                      ? frame->approx_duration * frame->frame_generation_phase / 3.0
++                      : can_interpolate ? frame->ideal_frame_vsync : 0;
+     params.info_callback = info_callback;
+     params.info_priv = vo;
+     params.skip_caching_single_frame = !cache_frame;
+     params.preserve_mixing_cache = p->next_opts->inter_preserve && !frame->still;
++    if (wants_framegen)
++        params.frame_mixer = NULL;
+     if (frame->still)
+         params.frame_mixer = NULL;
+ 
+@@ -1055,6 +1382,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         if (p->want_reset) {
+             pl_renderer_flush_cache(p->rr);
+             pl_queue_reset(p->queue);
++            p->framegen_pair[0] = 0;
++            p->framegen_pair[1] = 0;
++            p->framegen_output_mask = 0;
+             p->last_pts = 0.0;
+             p->last_id = 0;
+             p->want_reset = false;
+@@ -1242,7 +1572,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+             struct pl_queue_params qparams = *pl_queue_params(
+                 .pts = frame->current->pts + pts_offset,
+                 .radius = pl_frame_mix_radius(&params),
+-                .vsync_duration = can_interpolate ? frame->ideal_frame_vsync_duration : 0,
++                .vsync_duration = wants_framegen ? frame->approx_duration / 3.0
++                                : can_interpolate ? frame->ideal_frame_vsync_duration : 0,
+             );
+ #if PL_API_VER >= 340
+             qparams.drift_compensation = 0;
+@@ -1311,7 +1642,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+         struct pl_queue_params qparams = *pl_queue_params(
+             .pts = frame->current->pts + pts_offset,
+             .radius = pl_frame_mix_radius(&params),
+-            .vsync_duration = can_interpolate ? frame->ideal_frame_vsync_duration : 0,
++            .vsync_duration = wants_framegen ? frame->approx_duration / 3.0
++                            : can_interpolate ? frame->ideal_frame_vsync_duration : 0,
+             .interpolation_threshold = opts->interpolation_threshold,
+         );
+ #if PL_API_VER >= 340
+@@ -1399,8 +1731,17 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+             update_hook_opts_dynamic(p, p->hooks[i], frame->current);
+     }
+ 
+-    // Render frame
+-    if (!pl_render_image_mix(p->rr, &mix, &target, &params)) {
++    // Generate only the fixed 1/3 and 2/3 phases. On any failure, render the
++    // original mix for this presentation and disable future generated phases.
++    struct pl_frame generated = {0};
++    bool use_generated = wants_framegen && frame->frame_generation_phase > 0 &&
++                         framegen_generate(vo, &mix,
++                                           frame->frame_generation_phase,
++                                           &generated);
++    bool rendered = use_generated
++                  ? pl_render_image(p->rr, &generated, &target, &params)
++                  : pl_render_image_mix(p->rr, &mix, &target, &params);
++    if (!rendered) {
+         MP_ERR(vo, "Failed rendering frame!\n");
+         goto done;
+     }
+@@ -1426,7 +1767,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+     }
+     mp_mutex_unlock(&vo->params_mutex);
+ 
+-    p->is_interpolated = pts_offset != 0 && mix.num_frames > 1;
++    p->is_interpolated = use_generated;
+     valid = true;
+     // fall through
+ 
+@@ -2077,6 +2418,12 @@ static void uninit(struct vo *vo)
+ {
+     struct priv *p = vo->priv;
+     pl_queue_destroy(&p->queue); // destroy this first
++    for (int i = 0; i < 2; i++) {
++        pl_tex_destroy(p->gpu, &p->framegen_source[i]);
++        pl_tex_destroy(p->gpu, &p->framegen_output[i]);
++    }
++    pl_tex_destroy(p->gpu, &p->framegen_motion);
++    pl_dispatch_destroy(&p->framegen_dispatch);
+     for (int i = 0; i < MP_ARRAY_SIZE(p->osd_state.entries); i++)
+         pl_tex_destroy(p->gpu, &p->osd_state.entries[i].tex);
+     for (int i = 0; i < p->num_sub_tex; i++)
+@@ -2164,6 +2511,15 @@ static int preinit(struct vo *vo)
+     pl_gpu_set_cache(p->gpu, p->shader_cache.cache);
+     p->rr = pl_renderer_create(p->pllog, p->gpu);
+     p->queue = pl_queue_create(p->gpu);
++#if HAVE_VULKAN
++    p->framegen_vulkan = pl_vulkan_get(p->gpu) != NULL;
++#endif
++    if (p->framegen_vulkan)
++        p->framegen_dispatch = pl_dispatch_create(p->pllog, p->gpu);
++    if (p->framegen_vulkan && !p->framegen_dispatch) {
++        p->framegen_failed = true;
++        MP_ERR(vo, "ReKazumi frame generation dispatch creation failed\n");
++    }
+     p->osd_fmt[SUBBITMAP_LIBASS] = pl_find_named_fmt(p->gpu, "r8");
+     p->osd_fmt[SUBBITMAP_BGRA] = pl_find_named_fmt(p->gpu, "bgra8");
+     p->osd_sync = 1;
+@@ -2529,6 +2885,9 @@ static void update_render_options(struct vo *vo)
+                       (pars->params.skip_anti_aliasing ? 1 : 2);
+     }
+     vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
++    vo_set_frame_generation(vo, p->next_opts->frame_generation &&
++                            p->framegen_vulkan && p->framegen_dispatch &&
++                            !p->framegen_failed ? 3 : 1);
+ 
+     pars->params.deband_params = opts->deband ? &pars->deband_params : NULL;
+     pars->deband_params.iterations = opts->deband_opts->iterations;

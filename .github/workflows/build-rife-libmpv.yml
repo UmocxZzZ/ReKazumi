@@ -1,13 +1,7 @@
-name: Build ReKazumi safe libmpv (arm64)
+name: Build ReKazumi Vulkan framegen prototype (arm64)
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: Publish/update the native libmpv release asset
-        required: false
-        type: boolean
-        default: false
   push:
     branches:
       - feat/anime4k-rife-3x
@@ -16,7 +10,7 @@ on:
       - .github/workflows/build-rife-libmpv.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -68,23 +62,12 @@ jobs:
           chmod +x /tmp/libmpv-build/buildscripts/include/download-sdk-debian.sh
           chmod +x native/libmpv/build_arm64.sh
 
-      - name: Build arm64 fail-closed libmpv runtime
+      - name: Build arm64 off-device Vulkan prototype
         run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
 
       - name: Upload libmpv artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rekazumi-afme-libmpv-arm64
-          path: /tmp/libmpv-build/buildscripts/rekazumi-afme-arm64-v8a.jar
+          name: rekazumi-vulkan-framegen-prototype-arm64
+          path: /tmp/libmpv-build/buildscripts/rekazumi-vulkan-framegen-prototype-arm64-v8a.jar
           if-no-files-found: error
-
-      - name: Publish native runtime release
-        if: inputs.publish_release == true
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: afme-runtime-v1
-          name: ReKazumi safe arm64 runtime v1
-          target_commitish: ${{ github.sha }}
-          prerelease: true
-          files: |
-            /tmp/libmpv-build/buildscripts/rekazumi-afme-arm64-v8a.jar
