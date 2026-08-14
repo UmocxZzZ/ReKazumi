@@ -7,12 +7,18 @@ on:
       - feat/anime4k-rife-3x
     paths:
       - android/**
+      - lib/pages/player/controller/player_debug_controller.dart
+      - lib/pages/player/controller/player_frame_generation_session.dart
       - lib/pages/player/controller/player_frame_interpolation.dart
       - lib/pages/player/controller/player_playback_controller.dart
+      - lib/pages/player/video_details_sheet.dart
       - lib/pages/settings/player_settings.dart
       - lib/pages/settings/super_resolution_settings.dart
+      - lib/services/platform/frame_generation_capability_service.dart
       - lib/services/storage/settings_keys.dart
       - packages/media_kit_libs_android_video/**
+      - test/frame_generation_capability_service_test.dart
+      - test/frame_generation_session_test.dart
       - test/frame_interpolation_mode_test.dart
       - pubspec.yaml
       - pubspec.lock
@@ -49,11 +55,17 @@ jobs:
       - name: Check changed Dart formatting
         run: |
           dart format --output=none --set-exit-if-changed \
+            lib/pages/player/controller/player_debug_controller.dart \
+            lib/pages/player/controller/player_frame_generation_session.dart \
             lib/pages/player/controller/player_frame_interpolation.dart \
             lib/pages/player/controller/player_playback_controller.dart \
+            lib/pages/player/video_details_sheet.dart \
             lib/pages/settings/player_settings.dart \
             lib/pages/settings/super_resolution_settings.dart \
+            lib/services/platform/frame_generation_capability_service.dart \
             lib/services/storage/settings_keys.dart \
+            test/frame_generation_capability_service_test.dart \
+            test/frame_generation_session_test.dart \
             test/frame_interpolation_mode_test.dart
 
       - name: Run Flutter tests

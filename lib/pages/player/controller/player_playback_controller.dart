@@ -24,6 +24,7 @@ import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/utils/media.dart';
 import 'package:kazumi/services/platform/platform_environment_service.dart';
+import 'package:kazumi/services/platform/frame_generation_capability_service.dart';
 
 part 'player_playback_controller.g.dart';
 
@@ -62,12 +63,15 @@ abstract class _PlayerPlaybackController with Store {
     required this.debug,
     required this.videoUrl,
     required this.isLocalPlayback,
-  });
+    FrameGenerationCapabilityService? frameGenerationCapabilityService,
+  }) : frameGenerationCapabilityService = frameGenerationCapabilityService ??
+            FrameGenerationCapabilityService();
 
   final ShaderAssetService shaderAssetService;
   final PlayerDebugController debug;
   final String Function() videoUrl;
   final bool Function() isLocalPlayback;
+  final FrameGenerationCapabilityService frameGenerationCapabilityService;
   final PlayerScreenshotService screenshotService =
       const PlayerScreenshotService();
   final FrameGenerationSession frameGeneration = FrameGenerationSession();
@@ -251,9 +255,17 @@ abstract class _PlayerPlaybackController with Store {
     frameInterpolationMode = FrameInterpolationMode.fromStorageValue(
       storedFrameInterpolationMode,
     );
-    if (frameInterpolationMode.enabled && !frameInterpolationMode.available) {
+    if (Platform.isAndroid) {
       frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
-      frameGeneration.markUnavailable('no validated Vulkan backend');
+      final capabilities = await frameGenerationCapabilityService.probe();
+      frameGeneration.markUnavailable(capabilities.unavailableReason);
+    }
+    if (frameInterpolationMode.enabled && !frameInterpolationMode.available) {
+      if (frameGeneration.snapshot.state !=
+          FrameGenerationSessionState.unavailable) {
+        frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+        frameGeneration.markUnavailable('no validated Vulkan backend');
+      }
       await GStorage.putSetting<int>(
         SettingsKeys.defaultFrameInterpolationMode,
         FrameInterpolationMode.off.storageValue,

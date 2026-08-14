@@ -780,3 +780,48 @@
   only the six implementation/test files plus this journal. Amend this operation
   record into the same unpushed commit; continue excluding the unchanged-content
   `pubspec.lock` and generated `device-build/`, `work/`, and package build output.
+
+### Read-only Vulkan capability probe (2026-08-14)
+
+- The foundation commit was amended to final id `2a04421`, pushed through the
+  local `mixed:10808` proxy, and GitHub Actions run `31761849365` passed in
+  9m19s. Formatting, 140 tests, full analysis, Android arm64 APK build, exact
+  safe `libmpv.so` hash/fail-closed marker checks, package id verification, and
+  artifact upload all succeeded. The only annotations were GitHub's upstream
+  Node 20/setup-java action deprecation notices. No artifact was installed.
+- Read-only native-entry inspection found that the app already has a Kotlin
+  `MethodChannel` host but no app CMake/native module. One inspection command
+  incorrectly requested nonexistent `android/app/build.gradle.kts`; it failed
+  only for that read, then the actual Groovy `android/app/build.gradle` was
+  opened. No file changed because of the mistake. Two official-document web
+  lookups returned no usable content, so no implementation claim relies on
+  those empty results.
+- Chose a deliberately shallow first probe: Android reports its packaged Vulkan
+  feature version and hardware level through `PackageManager`; Java does not
+  claim AHardwareBuffer/external-memory/timeline-semaphore support. The response
+  hard-codes `nativeBackendLinked=false`, so even Vulkan 1.3 remains unavailable
+  until a future NDK extension probe and transport backend actually exist.
+- Added the Android method channel, a test-injectable Dart capability service,
+  fail-closed malformed/missing-channel handling, and playback initialization
+  diagnostics. The result reason includes Android SDK and Vulkan version while
+  state remains unavailable. Expanded the validation workflow paths and format
+  list to cover all new frame-generation state, capability, log/status, and test
+  files. Targeted capability/session/interpolation tests passed 11/11.
+- Strengthened the capability contract with a test proving that even a future
+  `nativeBackendLinked=true` response remains unavailable until native extension
+  validation exists; the final targeted suite passed 12/12. Focused analysis
+  reported no issues. Full tests passed 143/143 and full analysis again had only
+  the existing 18 info-level findings. The pre-existing history-test logger
+  warnings remain unrelated.
+- Local Android arm64 release build succeeded and produced
+  `build/app/outputs/flutter-apk/app-release.apk` (47.2 MB), SHA-256
+  `507ef58e9bc3d235efc4179a056ae1ccd0abbcbfd21e654d3df6d365fde04109`;
+  output metadata confirms `com.predidit.rekazumi`. A post-format incremental
+  `app:compileReleaseKotlin` also succeeded. Gradle repeated the repository's
+  existing warning that pinned NDK 27.2 is below the `jni` plugin's recommended
+  NDK 28.2, plus upstream Kotlin/Gradle deprecation notices. Do not change the
+  toolchain as part of this isolated probe. The APK was not installed or run.
+- Created commit `3640f31` (`feat: probe Android Vulkan capabilities safely`)
+  with only the capability channel/service/tests, playback integration, CI
+  coverage, and journal. Amend this operation record into the same unpushed
+  commit, then push through the approved local proxy and require CI success.

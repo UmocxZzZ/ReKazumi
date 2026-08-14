@@ -26,6 +26,8 @@ class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.predidit.kazumi/intent"
     private val STORAGE_CHANNEL = "com.predidit.kazumi/storage"
     private val PIP_CHANNEL = "com.predidit.kazumi/pip"
+    private val FRAME_GENERATION_CHANNEL =
+        "com.predidit.rekazumi/frame_generation"
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
 
@@ -110,6 +112,16 @@ class MainActivity: AudioServiceActivity() {
             }
         }
 
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FRAME_GENERATION_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "probeVulkan" -> result.success(probeVulkanCapabilities())
+                else -> result.notImplemented()
+            }
+        }
+
         pipChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PIP_CHANNEL)
         pipChannel?.setMethodCallHandler { call, result ->
             if (call.method == "isPictureInPictureSupported") {
@@ -157,6 +169,38 @@ class MainActivity: AudioServiceActivity() {
 
     private fun getAndroidSdkVersion(): Int {
         return Build.VERSION.SDK_INT
+    }
+
+    private fun probeVulkanCapabilities(): Map<String, Any> {
+        val vulkanVersion = systemFeatureVersion(
+            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
+        )
+        val vulkanHardwareLevel = systemFeatureVersion(
+            PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL,
+        )
+        val vulkanMajor = vulkanVersion ushr 22
+        val vulkanMinor = (vulkanVersion ushr 12) and 0x3ff
+        val vulkanPatch = vulkanVersion and 0xfff
+        val vulkan11 = (1 shl 22) or (1 shl 12)
+
+        return mapOf(
+            "androidSdk" to Build.VERSION.SDK_INT,
+            "vulkanVersion" to vulkanVersion,
+            "vulkanMajor" to vulkanMajor,
+            "vulkanMinor" to vulkanMinor,
+            "vulkanPatch" to vulkanPatch,
+            "vulkanHardwareLevel" to vulkanHardwareLevel,
+            "hasVulkan11" to (vulkanVersion >= vulkan11),
+            // Java can report the Android Vulkan feature level, but the required
+            // device extensions must still be enumerated by the future NDK backend.
+            "nativeBackendLinked" to false,
+        )
+    }
+
+    private fun systemFeatureVersion(featureName: String): Int {
+        return packageManager.systemAvailableFeatures
+            .firstOrNull { feature -> feature.name == featureName }
+            ?.version ?: 0
     }
 
     private fun enterAndroidFullscreen() {
