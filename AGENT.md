@@ -1670,3 +1670,18 @@
   belongs to the user: manually open ReKazumi, enter Logs, tap the shield, read
   the no-playback confirmation, and choose Start validation. Do not send an app
   launch, shield click, playback, Surface, or display-rate command remotely.
+- User manually opened Logs and ran the shield action. Structured device result
+  passed every gate on `Adreno (TM) 830`: marker and shader/policy identities
+  exact, `validationComplete=true`, `noSurface=true`, `isolatedProcess=true`
+  (child PID 16105), RGBA16F/RG16F ready, shader executed, both 1/3 and 2/3
+  outputs valid, no quarantine, no native/invocation error, and transport still
+  deliberately false. GPU timestamps were 6,563 ns and 1,406 ns; FP16 red
+  readbacks were 0.333252 and 0.666504, matching expected quantization.
+- Read-only postvalidation inspection found main process PID 27759 alive, no
+  `:framegen_validation` PID, and no bound validation service. This proves the
+  child self-exit/OS cleanup path completed without terminating or crashing the
+  app. The safe offscreen/device gate is now accepted. It does not validate
+  decoded-frame import, player synchronization, output presentation, Anime4K,
+  or production interpolation. Next engineering phase may begin only with a
+  separately gated transport design; keep Dart 3x unavailable until that path
+  has its own offscreen and short-presentation evidence.
