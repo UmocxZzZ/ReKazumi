@@ -153,6 +153,7 @@ void main() {
             'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49',
         'validationComplete': true,
         'noSurface': true,
+        'isolatedProcess': true,
         'rgba16fReady': true,
         'rg16fReady': true,
         'shaderExecuted': true,
@@ -181,6 +182,7 @@ void main() {
       invoke: () async => <Object?, Object?>{
         'validationComplete': false,
         'noSurface': true,
+        'isolatedProcess': true,
         'shaderExecuted': true,
         'phase13Valid': false,
         'phase23Valid': true,
@@ -202,6 +204,7 @@ void main() {
         'shaderSha256': 'unexpected',
         'validationComplete': true,
         'noSurface': true,
+        'isolatedProcess': true,
         'rgba16fReady': true,
         'rg16fReady': true,
         'shaderExecuted': true,
@@ -224,6 +227,7 @@ void main() {
             'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49',
         'validationComplete': true,
         'noSurface': true,
+        'isolatedProcess': true,
         'rgba16fReady': true,
         'rg16fReady': true,
         'shaderExecuted': true,
@@ -231,6 +235,31 @@ void main() {
         'phase23Valid': true,
         'resourcesQuarantined': false,
         'phase13GpuNs': 0,
+        'phase23GpuNs': 1,
+        'transportBackendImplemented': false,
+        'error': '',
+      },
+    );
+
+    expect((await service.validate()).passed, isFalse);
+  });
+
+  test('offscreen validation rejects a non-isolated response', () async {
+    final service = FrameGenerationOffscreenValidationService(
+      invoke: () async => <Object?, Object?>{
+        'validationMarker': 'ReKazumi Vulkan offscreen phase validation v1',
+        'shaderSha256':
+            'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49',
+        'validationComplete': true,
+        'noSurface': true,
+        'isolatedProcess': false,
+        'rgba16fReady': true,
+        'rg16fReady': true,
+        'shaderExecuted': true,
+        'phase13Valid': true,
+        'phase23Valid': true,
+        'resourcesQuarantined': false,
+        'phase13GpuNs': 1,
         'phase23GpuNs': 1,
         'transportBackendImplemented': false,
         'error': '',

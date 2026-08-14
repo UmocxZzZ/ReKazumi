@@ -137,6 +137,34 @@ jobs:
             | grep -q 'ReKazumi offscreen timeout quarantine v1'
           ! strings /tmp/rekazumi-framegen-probe.so \
             | grep -Eq 'ANativeWindow|vkCreateSwapchainKHR|vkQueuePresentKHR'
+          LLVM_NM="$(find "$ANDROID_SDK_ROOT/ndk/27.2.12479018" \
+            -type f -name llvm-nm -print -quit)"
+          test -x "$LLVM_NM"
+          "$LLVM_NM" -D /tmp/rekazumi-framegen-probe.so \
+            > /tmp/rekazumi-framegen-symbols.txt
+          grep -q 'FrameGenerationValidationService_validateNativeVulkanOffscreen' \
+            /tmp/rekazumi-framegen-symbols.txt
+          ! grep -q 'MainActivity_validateNativeVulkanOffscreen' \
+            /tmp/rekazumi-framegen-symbols.txt
+          MERGED_MANIFEST="$(find build/app/intermediates \
+            -path '*release*' -path '*merged_manifest*' \
+            -name AndroidManifest.xml -print -quit)"
+          test -n "$MERGED_MANIFEST"
+          python - "$MERGED_MANIFEST" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          android = 'http://schemas.android.com/apk/res/android'
+          root = ET.parse(sys.argv[1]).getroot()
+          services = root.findall('./application/service')
+          target = next((service for service in services if service.get(
+              f'{{{android}}}name') ==
+              'com.predidit.rekazumi.FrameGenerationValidationService'), None)
+          assert target is not None
+          assert target.get(f'{{{android}}}exported') == 'false'
+          assert target.get(f'{{{android}}}process') == ':framegen_validation'
+          assert target.get(f'{{{android}}}stopWithTask') == 'true'
+          PY
           METADATA_PATH="$(find build/app/outputs -name output-metadata.json -print -quit)"
           test -n "$METADATA_PATH"
           python - "$METADATA_PATH" <<'PY'

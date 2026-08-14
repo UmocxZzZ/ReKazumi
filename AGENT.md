@@ -1508,3 +1508,68 @@
   installed, launched, or promoted to a device candidate. Next phase is to
   design an explicit one-shot device invocation that exposes only structured
   offscreen diagnostics and cannot enter playback or presentation paths.
+
+### Isolated device invocation design (2026-08-14)
+
+- Pushed journal commit `1bbd37f` after recording the successful offscreen CI.
+  Read-only inspection of the existing logs page and Android channel found that
+  a manual log-page button could call the harness, but the current JNI method
+  would still execute inside the main app process. A pathological driver hang
+  before/around the bounded fence could therefore strand an app worker even
+  though the harness has no Surface. Do not expose that direct route on device.
+- Chosen isolation boundary: move the only offscreen JNI declaration to a
+  non-exported Android service in dedicated `:framegen_validation` process.
+  The main process binds explicitly, receives only Messenger bundles/raw JSON,
+  enforces a 7-second wall timeout, and can kill the known same-package child
+  PID on timeout. The child sends its PID before native work, executes only once,
+  returns the result, then terminates itself so both normal and quarantined
+  Vulkan state receives OS cleanup. Remote death must fail closed. First compile
+  and CI-validate this transport; add a confirmation-gated log-page button only
+  in a separate step after isolation is proven. No installation/device action.
+- Implemented the isolation transport in source: a non-exported dedicated
+  service/process, Messenger protocol, PID-first/result PID redundancy, main
+  process bind/death handling, 7-second timeout and child kill, child self-exit
+  after reply, and cancellation on activity destruction. The main activity no
+  longer declares or invokes the offscreen JNI symbol; it only parses raw JSON
+  returned by the child. Dart now requires `isolatedProcess=true` in addition
+  to every prior gate, with a non-isolated regression test. The UI still has no
+  trigger and playback remains disconnected. Next operation is formatting,
+  focused tests, and an inspection-only arm64 compile/manifest-symbol audit.
+- Direct formatting reported no Dart changes, focused tests passed 12/12, and
+  the inspection-only arm64 build succeeded in 143.7 seconds (Gradle 133.4
+  seconds). Merged Manifest inspection confirmed the validation service is
+  `exported=false`, uses `:framegen_validation`, and stops with the app task.
+  Dynamic symbols contain only the service offscreen JNI entry plus the main
+  activity's read-only capability probe; the old main-activity offscreen JNI
+  entry is absent. APK SHA-256 is
+  `69739904a581f3c48d7885df188afa644d4d3cdfb73f963e0513fdc64b3ff11e`
+  (50,277,078 bytes) and native library SHA-256 is
+  `6bcee7fa266fb023cbe731f7465685235fd3a866cd567416d8de4793b78226e0`
+  (920,824 bytes). No device action occurred.
+- Timeout-kill review added a defense against future manifest regressions: the
+  service now verifies its actual running process name is exactly the dedicated
+  suffix before starting native work, while the client rejects missing or
+  main-process-equal PIDs and will never kill its own PID. CI now parses the
+  merged Manifest and checks JNI ownership explicitly. Recompile before
+  accepting this hardening.
+- The PID/process-name hardened incremental arm64 build passed in 70.6 seconds
+  (Gradle 64.7 seconds). Full tests passed 152/152; analysis again returned no
+  warnings/errors and only the same 18 existing info findings. Final local
+  transport APK SHA-256 is
+  `b4d6c32db8338272b4b38c66b9f385151b02d32c711c53adf101a0edd3c06c89`
+  (50,277,330 bytes); native harness remains
+  `6bcee7fa266fb023cbe731f7465685235fd3a866cd567416d8de4793b78226e0`
+  (920,824 bytes), and safe `libmpv.so` remains the exact pinned
+  `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  Repeated merged-Manifest/JNI inspection passed and `git diff --check` passed.
+  No download, install, launch, display, or playback operation occurred.
+- Planned Git operation: stage only the workflow, journal, app Manifest, JNI
+  ownership change, three new isolation Kotlin files, MainActivity transport,
+  Dart isolation gate, and tests. Exclude unrelated `pubspec.lock` plus every
+  generated directory/output. Verify the exact cached scope and whitespace,
+  commit/push the isolation transport, then require exact-head Android CI before
+  adding any user-visible manual trigger.
+- Exact cached whitespace/scope checks passed for the 10 intended files, with
+  all unrelated/generated paths excluded. Created local commit `4cb5e3d`
+  (`feat: isolate Vulkan validation process`). Amend this record into the still
+  unpushed commit, push through `mixed:10808`, and require its exact-head CI.

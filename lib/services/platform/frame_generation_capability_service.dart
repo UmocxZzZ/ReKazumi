@@ -168,6 +168,7 @@ final class FrameGenerationOffscreenValidation {
     required this.shaderSha256,
     required this.validationComplete,
     required this.noSurface,
+    required this.isolatedProcess,
     required this.rgba16fReady,
     required this.rg16fReady,
     required this.shaderExecuted,
@@ -198,6 +199,7 @@ final class FrameGenerationOffscreenValidation {
       shaderSha256: readString('shaderSha256'),
       validationComplete: readBool('validationComplete'),
       noSurface: readBool('noSurface'),
+      isolatedProcess: readBool('isolatedProcess'),
       rgba16fReady: readBool('rgba16fReady'),
       rg16fReady: readBool('rg16fReady'),
       shaderExecuted: readBool('shaderExecuted'),
@@ -220,6 +222,7 @@ final class FrameGenerationOffscreenValidation {
       shaderSha256: '',
       validationComplete: false,
       noSurface: false,
+      isolatedProcess: false,
       rgba16fReady: false,
       rg16fReady: false,
       shaderExecuted: false,
@@ -240,6 +243,7 @@ final class FrameGenerationOffscreenValidation {
   final String shaderSha256;
   final bool validationComplete;
   final bool noSurface;
+  final bool isolatedProcess;
   final bool rgba16fReady;
   final bool rg16fReady;
   final bool shaderExecuted;
@@ -261,6 +265,7 @@ final class FrameGenerationOffscreenValidation {
       shaderSha256 == expectedShaderSha256 &&
       validationComplete &&
       noSurface &&
+      isolatedProcess &&
       rgba16fReady &&
       rg16fReady &&
       shaderExecuted &&

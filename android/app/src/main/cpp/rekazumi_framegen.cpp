@@ -240,8 +240,8 @@ Java_com_predidit_rekazumi_MainActivity_probeNativeVulkanCapabilities(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_predidit_rekazumi_MainActivity_validateNativeVulkanOffscreen(
-    JNIEnv* environment, jobject /* activity */) {
+Java_com_predidit_rekazumi_FrameGenerationValidationService_validateNativeVulkanOffscreen(
+    JNIEnv* environment, jobject /* service */) {
   const std::string result = rekazumi::ValidateVulkanOffscreen();
   return environment->NewStringUTF(result.c_str());
 }

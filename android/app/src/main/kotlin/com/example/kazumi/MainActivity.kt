@@ -32,6 +32,7 @@ class MainActivity: AudioServiceActivity() {
         "com.predidit.rekazumi/frame_generation"
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
+    private var frameGenerationValidationClient: FrameGenerationValidationClient? = null
 
     private var pipIsPlaying = false
     private var pipDanmakuEnabled = false
@@ -75,6 +76,8 @@ class MainActivity: AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        frameGenerationValidationClient?.cancel()
+        frameGenerationValidationClient = null
         frameGenerationProbeExecutor.shutdownNow()
         unregisterPipActionReceiverIfNeeded()
         super.onDestroy()
@@ -136,10 +139,7 @@ class MainActivity: AudioServiceActivity() {
                     val capabilities = probeVulkanCapabilities()
                     runOnUiThread { result.success(capabilities) }
                 }
-                "validateOffscreen" -> frameGenerationProbeExecutor.execute {
-                    val validation = validateVulkanOffscreen()
-                    runOnUiThread { result.success(validation) }
-                }
+                "validateOffscreen" -> startOffscreenValidation(result)
                 else -> result.notImplemented()
             }
         }
@@ -260,10 +260,38 @@ class MainActivity: AudioServiceActivity() {
 
     private external fun probeNativeVulkanCapabilities(): String
 
-    private fun validateVulkanOffscreen(): Map<String, Any> {
+    private fun startOffscreenValidation(result: MethodChannel.Result) {
+        if (frameGenerationValidationClient != null) {
+            result.success(parseVulkanOffscreen(null, "isolated_validation_in_progress", 0))
+            return
+        }
+        lateinit var client: FrameGenerationValidationClient
+        client = FrameGenerationValidationClient(this) { isolated ->
+            if (frameGenerationValidationClient === client) {
+                frameGenerationValidationClient = null
+            }
+            result.success(
+                parseVulkanOffscreen(
+                    isolated.nativeJson,
+                    isolated.error,
+                    isolated.remoteProcessId,
+                ),
+            )
+        }
+        frameGenerationValidationClient = client
+        client.start()
+    }
+
+    private fun parseVulkanOffscreen(
+        nativeJson: String?,
+        isolatedError: String,
+        remoteProcessId: Int,
+    ): Map<String, Any> {
         val validation = mutableMapOf<String, Any>(
             "validationComplete" to false,
-            "noSurface" to true,
+            "noSurface" to false,
+            "isolatedProcess" to false,
+            "isolatedProcessId" to remoteProcessId,
             "rgba16fReady" to false,
             "rg16fReady" to false,
             "shaderExecuted" to false,
@@ -275,13 +303,17 @@ class MainActivity: AudioServiceActivity() {
             "transportBackendImplemented" to false,
             "error" to "",
         )
-        val loadError = nativeFrameGenerationLoadError
-        if (loadError != null) {
-            validation["error"] = "native_library_unavailable_$loadError"
+        if (isolatedError.isNotEmpty()) {
+            validation["error"] = isolatedError
+            return validation
+        }
+        if (nativeJson == null) {
+            validation["error"] = "isolated_validation_missing_result"
             return validation
         }
         try {
-            val native = JSONObject(validateNativeVulkanOffscreen())
+            val native = JSONObject(nativeJson)
+            validation["isolatedProcess"] = true
             validation["validationMarker"] =
                 native.optString("validationMarker", "")
             validation["shaderSha256"] = native.optString("shaderSha256", "")
@@ -311,8 +343,6 @@ class MainActivity: AudioServiceActivity() {
         }
         return validation
     }
-
-    private external fun validateNativeVulkanOffscreen(): String
 
     private fun systemFeatureVersion(featureName: String): Int {
         return packageManager.systemAvailableFeatures

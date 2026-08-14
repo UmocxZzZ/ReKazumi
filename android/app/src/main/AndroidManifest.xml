@@ -42,6 +42,11 @@
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+        <service
+            android:name=".FrameGenerationValidationService"
+            android:exported="false"
+            android:process=":framegen_validation"
+            android:stopWithTask="true" />
         <!-- audio_service -->
         <service
             android:name="com.ryanheise.audioservice.AudioService"
