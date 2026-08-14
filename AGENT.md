@@ -1628,3 +1628,13 @@
   files; unrelated/generated paths stayed excluded. Created local commit
   `90dd3d5` (`feat: expose isolated Vulkan diagnostic`). Amend this entry into
   that still-unpushed commit, push through `mixed:10808`, and require its CI.
+- The amended manual diagnostic commit is
+  `eb40aeecc8d5402425a6abdaafe0556f6ff80118`; proxy push succeeded. Exact-head
+  run `31777270613` completed successfully after seven bounded 59-second local
+  observation timeouts during one uninterrupted cold Android build. Format,
+  155 tests, analysis, arm64 APK, shader identity, packaged native safety,
+  isolated Manifest/JNI ownership, forbidden presentation symbols, and upload
+  all passed. Artifact `rekazumi-safe-android-arm64` id `9210546524` is
+  49,467,880 bytes, unexpired until 2026-11-12. It remains remote and uninstalled
+  at this point. Record/push this result before preparing any device candidate;
+  never auto-run the shield action or enter playback.
