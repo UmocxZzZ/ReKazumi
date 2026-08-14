@@ -1573,3 +1573,58 @@
   all unrelated/generated paths excluded. Created local commit `4cb5e3d`
   (`feat: isolate Vulkan validation process`). Amend this record into the still
   unpushed commit, push through `mixed:10808`, and require its exact-head CI.
+- The amended isolation commit is
+  `1582be8dd5eb8f7ee1ab0034402b370f76b32cf3`; proxy push succeeded and exact
+  run `31775921062` completed successfully in 10m24s. Seven bounded 59-second
+  local watch windows expired during its single uninterrupted cold arm64 build;
+  these were observation timeouts, not failures/retries. All format, 152-test,
+  analysis, shader identity, packaged native, merged isolated-service Manifest,
+  service-only JNI ownership, forbidden presentation-symbol, and upload gates
+  passed. Artifact `rekazumi-safe-android-arm64` id `9210053975` is 49,460,213
+  bytes, unexpired until 2026-11-12, and was not downloaded or installed.
+- Began the separately reviewable manual-trigger phase only after that success.
+  Planned UI is Android-only on the existing logs page, performs no call before
+  a non-dismissible explicit confirmation, uses the process-wide cached Dart
+  service, persists one structured diagnostic record, and shows a copyable
+  result dialog. It must require the exact timeout-policy marker and positive
+  isolated PID as well as every prior gate. Add widget tests proving cancel
+  invokes nothing and confirmation invokes exactly once. No playback linkage.
+- First focused UI test run failed before invoking validation: mounting the
+  entire logs page also mounted `SysAppBar`, whose global settings box is not
+  initialized in this isolated widget-test environment; both UI tests then hit
+  `pumpAndSettle` timeout. Service tests still passed. This is a test-boundary
+  mistake, not a runtime validation failure. Refactor the confirmation/action/
+  result UI into a standalone widget with an injected service, leaving the logs
+  page responsible only for Android visibility and log refresh. Test that small
+  widget inside a plain Scaffold so no global app storage is required.
+- The first refactored test retry did not compile because the mechanical test
+  rewrite omitted one closing `Scaffold` parenthesis in each of two pumpWidget
+  trees. Dart formatter identified the exact lines; no runtime code executed.
+  Restore both delimiters, format successfully, then rerun both focused files.
+- After fixing syntax, the explicit-cancel test passed and proved zero service
+  invocations. The confirmed test reached its one invocation but timed out
+  waiting for the platform log-directory plugin, which is absent in the narrow
+  widget-test host. Make the diagnostic writer injectable: production retains
+  the awaited real file append, while tests use an immediate in-memory success.
+  This removes a platform-fixture dependency without weakening confirmation or
+  persistence behavior.
+- With the injected test writer, the focused capability/UI suite passed 15/15.
+  The inspection-only arm64 APK build then succeeded in 124.4 seconds (Gradle
+  119.0 seconds). Full tests passed 155/155 and static analysis again had no
+  warnings/errors, only the same 18 existing info findings. Final manual-gate
+  APK SHA-256 is
+  `4507a032b339678a47508101fe04f785e4286e2a23029aa3ed05522e1ec3841e`
+  (50,284,890 bytes); native harness and safe `libmpv.so` hashes remain exactly
+  `6bcee7fa266fb023cbe731f7465685235fd3a866cd567416d8de4793b78226e0`
+  and `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  Package identity is `com.predidit.rekazumi` / `ReKazumi`; merged isolation
+  attributes remain correct and `git diff --check` passed. No device action.
+- Planned Git operation: stage only the journal, MainActivity policy-marker
+  parse, logs page/action, awaited diagnostic append, Dart gate, and two test
+  files. Exclude `pubspec.lock` and all generated outputs. Verify exact cached
+  scope/whitespace, commit and push this manual diagnostic gate, then require
+  exact-head Android CI. Do not download/install until that CI succeeds.
+- Exact cached whitespace/scope checks passed for the eight intended manual-gate
+  files; unrelated/generated paths stayed excluded. Created local commit
+  `90dd3d5` (`feat: expose isolated Vulkan diagnostic`). Amend this entry into
+  that still-unpushed commit, push through `mixed:10808`, and require its CI.

@@ -317,6 +317,8 @@ class MainActivity: AudioServiceActivity() {
             validation["validationMarker"] =
                 native.optString("validationMarker", "")
             validation["shaderSha256"] = native.optString("shaderSha256", "")
+            validation["timeoutPolicyMarker"] =
+                native.optString("timeoutPolicyMarker", "")
             validation["validationComplete"] =
                 native.optBoolean("validationComplete", false)
             validation["noSurface"] = native.optBoolean("noSurface", false)

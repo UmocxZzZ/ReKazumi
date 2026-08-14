@@ -162,13 +162,17 @@ final class FrameGenerationOffscreenValidation {
       'ReKazumi Vulkan offscreen phase validation v1';
   static const expectedShaderSha256 =
       'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49';
+  static const expectedTimeoutPolicyMarker =
+      'ReKazumi offscreen timeout quarantine v1';
 
   const FrameGenerationOffscreenValidation({
     required this.validationMarker,
     required this.shaderSha256,
+    required this.timeoutPolicyMarker,
     required this.validationComplete,
     required this.noSurface,
     required this.isolatedProcess,
+    required this.isolatedProcessId,
     required this.rgba16fReady,
     required this.rg16fReady,
     required this.shaderExecuted,
@@ -179,6 +183,7 @@ final class FrameGenerationOffscreenValidation {
     required this.phase23GpuNs,
     required this.phase13Red,
     required this.phase23Red,
+    required this.deviceName,
     required this.transportBackendImplemented,
     required this.nativeError,
     required this.invocationError,
@@ -197,9 +202,11 @@ final class FrameGenerationOffscreenValidation {
     return FrameGenerationOffscreenValidation(
       validationMarker: readString('validationMarker'),
       shaderSha256: readString('shaderSha256'),
+      timeoutPolicyMarker: readString('timeoutPolicyMarker'),
       validationComplete: readBool('validationComplete'),
       noSurface: readBool('noSurface'),
       isolatedProcess: readBool('isolatedProcess'),
+      isolatedProcessId: readInt('isolatedProcessId'),
       rgba16fReady: readBool('rgba16fReady'),
       rg16fReady: readBool('rg16fReady'),
       shaderExecuted: readBool('shaderExecuted'),
@@ -210,6 +217,7 @@ final class FrameGenerationOffscreenValidation {
       phase23GpuNs: readInt('phase23GpuNs'),
       phase13Red: readDouble('phase13Red'),
       phase23Red: readDouble('phase23Red'),
+      deviceName: readString('deviceName'),
       transportBackendImplemented: readBool('transportBackendImplemented'),
       nativeError: readString('error'),
       invocationError: '',
@@ -220,9 +228,11 @@ final class FrameGenerationOffscreenValidation {
     return FrameGenerationOffscreenValidation(
       validationMarker: '',
       shaderSha256: '',
+      timeoutPolicyMarker: '',
       validationComplete: false,
       noSurface: false,
       isolatedProcess: false,
+      isolatedProcessId: 0,
       rgba16fReady: false,
       rg16fReady: false,
       shaderExecuted: false,
@@ -233,6 +243,7 @@ final class FrameGenerationOffscreenValidation {
       phase23GpuNs: 0,
       phase13Red: 0,
       phase23Red: 0,
+      deviceName: '',
       transportBackendImplemented: false,
       nativeError: '',
       invocationError: error.runtimeType.toString(),
@@ -241,9 +252,11 @@ final class FrameGenerationOffscreenValidation {
 
   final String validationMarker;
   final String shaderSha256;
+  final String timeoutPolicyMarker;
   final bool validationComplete;
   final bool noSurface;
   final bool isolatedProcess;
+  final int isolatedProcessId;
   final bool rgba16fReady;
   final bool rg16fReady;
   final bool shaderExecuted;
@@ -254,6 +267,7 @@ final class FrameGenerationOffscreenValidation {
   final int phase23GpuNs;
   final double phase13Red;
   final double phase23Red;
+  final String deviceName;
   final bool transportBackendImplemented;
   final String nativeError;
   final String invocationError;
@@ -263,9 +277,11 @@ final class FrameGenerationOffscreenValidation {
       nativeError.isEmpty &&
       validationMarker == expectedValidationMarker &&
       shaderSha256 == expectedShaderSha256 &&
+      timeoutPolicyMarker == expectedTimeoutPolicyMarker &&
       validationComplete &&
       noSurface &&
       isolatedProcess &&
+      isolatedProcessId > 0 &&
       rgba16fReady &&
       rg16fReady &&
       shaderExecuted &&
@@ -275,6 +291,31 @@ final class FrameGenerationOffscreenValidation {
       phase23GpuNs > 0 &&
       !resourcesQuarantined &&
       !transportBackendImplemented;
+
+  Map<String, Object?> toDiagnosticMap() => <String, Object?>{
+        'passed': passed,
+        'validationMarker': validationMarker,
+        'shaderSha256': shaderSha256,
+        'timeoutPolicyMarker': timeoutPolicyMarker,
+        'validationComplete': validationComplete,
+        'noSurface': noSurface,
+        'isolatedProcess': isolatedProcess,
+        'isolatedProcessId': isolatedProcessId,
+        'rgba16fReady': rgba16fReady,
+        'rg16fReady': rg16fReady,
+        'shaderExecuted': shaderExecuted,
+        'phase13Valid': phase13Valid,
+        'phase23Valid': phase23Valid,
+        'resourcesQuarantined': resourcesQuarantined,
+        'phase13GpuNs': phase13GpuNs,
+        'phase23GpuNs': phase23GpuNs,
+        'phase13Red': phase13Red,
+        'phase23Red': phase23Red,
+        'deviceName': deviceName,
+        'transportBackendImplemented': transportBackendImplemented,
+        'nativeError': nativeError,
+        'invocationError': invocationError,
+      };
 }
 
 final class FrameGenerationOffscreenValidationService {
@@ -289,6 +330,8 @@ final class FrameGenerationOffscreenValidationService {
   final FrameGenerationOffscreenInvoker _invoke;
   final Duration timeout;
   Future<FrameGenerationOffscreenValidation>? _cachedValidation;
+
+  bool get hasCachedValidation => _cachedValidation != null;
 
   static Future<Object?> _invokePlatform() {
     return _channel.invokeMethod<Object?>('validateOffscreen');

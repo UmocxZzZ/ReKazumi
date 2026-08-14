@@ -1,11 +1,13 @@
-import 'dart:io';
 import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
-import 'package:kazumi/bean/dialog/dialog_helper.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:kazumi/bean/appbar/sys_app_bar.dart';
+import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/widget/empty_state_widget.dart';
+import 'package:kazumi/pages/logs/offscreen_validation_action.dart';
+import 'package:path_provider/path_provider.dart';
 
 class LogsPage extends StatefulWidget {
   const LogsPage({super.key});
@@ -220,6 +222,10 @@ class _LogsPageState extends State<LogsPage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        if (Platform.isAndroid) ...[
+          OffscreenValidationAction(onDiagnosticPersisted: _loadLogs),
+          const SizedBox(width: 15),
+        ],
         FloatingActionButton(
           heroTag: null,
           onPressed: _clearLogs,

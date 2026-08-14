@@ -251,3 +251,20 @@ Future<bool> clearLogs() async {
     return false;
   }
 }
+
+Future<bool> appendDiagnosticLog(String message) async {
+  try {
+    final filePath = await KazumiLogOutput._getLogFilePath();
+    final line = '${DateTime.now().toIso8601String()} INFO    '
+        '${_singleLineLogText(message)}\n';
+    await KazumiLogOutput._logLock.synchronized(() async {
+      await File(filePath).writeAsString(
+        line,
+        mode: FileMode.writeOnlyAppend,
+      );
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
