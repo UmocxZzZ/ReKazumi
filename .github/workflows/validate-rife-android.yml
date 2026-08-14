@@ -1,0 +1,183 @@
+name: Validate ReKazumi safe Android runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/anime4k-rife-3x
+    paths:
+      - android/**
+      - lib/pages/player/controller/player_debug_controller.dart
+      - lib/pages/player/controller/player_frame_generation_session.dart
+      - lib/pages/player/controller/player_frame_interpolation.dart
+      - lib/pages/player/controller/player_playback_controller.dart
+      - lib/pages/player/video_details_sheet.dart
+      - lib/pages/settings/player_settings.dart
+      - lib/pages/settings/super_resolution_settings.dart
+      - lib/services/platform/frame_generation_capability_service.dart
+      - lib/services/storage/settings_keys.dart
+      - packages/media_kit_libs_android_video/**
+      - test/frame_generation_capability_service_test.dart
+      - test/frame_generation_session_test.dart
+      - test/frame_interpolation_mode_test.dart
+      - pubspec.yaml
+      - pubspec.lock
+      - .github/workflows/validate-rife-android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout ReKazumi
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2.16.0
+        with:
+          channel: stable
+          flutter-version-file: pubspec.yaml
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Check changed Dart formatting
+        run: |
+          dart format --output=none --set-exit-if-changed \
+            lib/pages/player/controller/player_debug_controller.dart \
+            lib/pages/player/controller/player_frame_generation_session.dart \
+            lib/pages/player/controller/player_frame_interpolation.dart \
+            lib/pages/player/controller/player_playback_controller.dart \
+            lib/pages/player/video_details_sheet.dart \
+            lib/pages/settings/player_settings.dart \
+            lib/pages/settings/super_resolution_settings.dart \
+            lib/services/platform/frame_generation_capability_service.dart \
+            lib/services/storage/settings_keys.dart \
+            test/frame_generation_capability_service_test.dart \
+            test/frame_generation_session_test.dart \
+            test/frame_interpolation_mode_test.dart
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Analyze Flutter project
+        run: flutter analyze --no-fatal-infos --fatal-warnings
+
+      - name: Build Android arm64 APK
+        run: >-
+          flutter build apk --release
+          --target-platform android-arm64
+          --dart-define=DANDANAPI_APPID=
+          --dart-define=DANDANAPI_KEY=
+          --dart-define=KAZUMI_APPID=
+          --dart-define=KAZUMI_KEY=
+
+      - name: Verify embedded offscreen validation shader
+        run: |
+          GLSLC="$(find "$ANDROID_SDK_ROOT/ndk/27.2.12479018/shader-tools" \
+            -type f -name glslc -print -quit)"
+          test -x "$GLSLC"
+          "$GLSLC" --target-env=vulkan1.1 -O \
+            android/app/src/main/cpp/framegen_offscreen.comp \
+            -o /tmp/framegen-offscreen-ci.spv
+          echo 'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49  /tmp/framegen-offscreen-ci.spv' \
+            | sha256sum --check --strict
+          python - android/app/src/main/cpp/framegen_offscreen_spv.h \
+            /tmp/framegen-offscreen-embedded.spv <<'PY'
+          import re
+          import struct
+          import sys
+
+          source = open(sys.argv[1], encoding='utf-8').read()
+          body = source.split('kFramegenOffscreenSpirv[] = {', 1)[1]
+          body = body.split('};', 1)[0]
+          words = [int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]+)u', body)]
+          with open(sys.argv[2], 'wb') as output:
+              output.write(struct.pack('<' + 'I' * len(words), *words))
+          PY
+          cmp /tmp/framegen-offscreen-ci.spv \
+            /tmp/framegen-offscreen-embedded.spv
+
+      - name: Verify native playback libraries are packaged
+        run: |
+          unzip -l build/app/outputs/flutter-apk/app-release.apk > /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/libmpv.so' /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/libmediakitandroidhelper.so' /tmp/apk-contents.txt
+          grep -q 'lib/arm64-v8a/librekazumi_framegen.so' /tmp/apk-contents.txt
+          ! grep -q 'lib/arm64-v8a/libkazumi_rife.so' /tmp/apk-contents.txt
+          ! grep -q 'flutter_assets/assets/models/rife-v4.25-lite/' /tmp/apk-contents.txt
+          unzip -p build/app/outputs/flutter-apk/app-release.apk \
+            lib/arm64-v8a/libmpv.so > /tmp/rekazumi-safe-libmpv.so
+          echo '7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a  /tmp/rekazumi-safe-libmpv.so' \
+            | sha256sum --check --strict
+          strings /tmp/rekazumi-safe-libmpv.so \
+            | grep -q 'Adreno AFME/AME disabled after device instability'
+          ! strings /tmp/rekazumi-safe-libmpv.so \
+            | grep -q 'motion-estimation extension detected'
+          unzip -p build/app/outputs/flutter-apk/app-release.apk \
+            lib/arm64-v8a/librekazumi_framegen.so > /tmp/rekazumi-framegen-probe.so
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi framegen capability probe v1'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi Vulkan offscreen phase validation v1'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi offscreen timeout quarantine v1'
+          ! strings /tmp/rekazumi-framegen-probe.so \
+            | grep -Eq 'ANativeWindow|vkCreateSwapchainKHR|vkQueuePresentKHR'
+          LLVM_NM="$(find "$ANDROID_SDK_ROOT/ndk/27.2.12479018" \
+            -type f -name llvm-nm -print -quit)"
+          test -x "$LLVM_NM"
+          "$LLVM_NM" -D /tmp/rekazumi-framegen-probe.so \
+            > /tmp/rekazumi-framegen-symbols.txt
+          grep -q 'FrameGenerationValidationService_validateNativeVulkanOffscreen' \
+            /tmp/rekazumi-framegen-symbols.txt
+          ! grep -q 'MainActivity_validateNativeVulkanOffscreen' \
+            /tmp/rekazumi-framegen-symbols.txt
+          MERGED_MANIFEST="$(find build/app/intermediates \
+            -path '*release*' -path '*merged_manifest*' \
+            -name AndroidManifest.xml -print -quit)"
+          test -n "$MERGED_MANIFEST"
+          python - "$MERGED_MANIFEST" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          android = 'http://schemas.android.com/apk/res/android'
+          root = ET.parse(sys.argv[1]).getroot()
+          services = root.findall('./application/service')
+          target = next((service for service in services if service.get(
+              f'{{{android}}}name') ==
+              'com.predidit.rekazumi.FrameGenerationValidationService'), None)
+          assert target is not None
+          assert target.get(f'{{{android}}}exported') == 'false'
+          assert target.get(f'{{{android}}}process') == ':framegen_validation'
+          assert target.get(f'{{{android}}}stopWithTask') == 'true'
+          PY
+          METADATA_PATH="$(find build/app/outputs -name output-metadata.json -print -quit)"
+          test -n "$METADATA_PATH"
+          python - "$METADATA_PATH" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1]) as metadata:
+              assert json.load(metadata)['applicationId'] == 'com.predidit.rekazumi'
+          PY
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekazumi-safe-android-arm64
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error

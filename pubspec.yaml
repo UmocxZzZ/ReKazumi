@@ -146,10 +146,7 @@ dependency_overrides:
       ref: 6d744e4ad8af23d29942a7061d8de101972a3707
       path: ./libs/ios/media_kit_libs_ios_video
   media_kit_libs_android_video:
-    git:
-      url: https://github.com/Predidit/media-kit.git
-      ref: 6d744e4ad8af23d29942a7061d8de101972a3707
-      path: ./libs/android/media_kit_libs_android_video
+    path: packages/media_kit_libs_android_video
   media_kit_libs_windows_video:
     git:
       url: https://github.com/Predidit/media-kit.git
@@ -216,7 +213,7 @@ flutter_native_splash:
   image_dark_ios: assets/images/logo/logo_ios.png
 
 msix_config:
-  display_name: Kazumi
+  display_name: ReKazumi
   publisher: CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US
   logo_path: assets/images/logo/logo_rounded.png
   sign_msix: false

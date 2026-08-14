@@ -1,4 +1,4 @@
-package com.example.kazumi
+package com.predidit.rekazumi
 
 import android.app.PendingIntent
 import android.content.Intent
@@ -21,13 +21,18 @@ import androidx.core.view.WindowInsetsControllerCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import com.ryanheise.audioservice.AudioServiceActivity
+import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class MainActivity: AudioServiceActivity() {
     private val CHANNEL = "com.predidit.kazumi/intent"
     private val STORAGE_CHANNEL = "com.predidit.kazumi/storage"
     private val PIP_CHANNEL = "com.predidit.kazumi/pip"
+    private val FRAME_GENERATION_CHANNEL =
+        "com.predidit.rekazumi/frame_generation"
     private var intentChannel: MethodChannel? = null
     private var pipChannel: MethodChannel? = null
+    private var frameGenerationValidationClient: FrameGenerationValidationClient? = null
 
     private var pipIsPlaying = false
     private var pipDanmakuEnabled = false
@@ -37,6 +42,18 @@ class MainActivity: AudioServiceActivity() {
     private var pipAspectWidth = 16
     private var pipAspectHeight = 9
     private var androidFullscreen = false
+    private val frameGenerationProbeExecutor = Executors.newSingleThreadExecutor()
+
+    private val nativeFrameGenerationLoadError: String? by lazy {
+        try {
+            System.loadLibrary("rekazumi_framegen")
+            null
+        } catch (error: LinkageError) {
+            error.javaClass.simpleName
+        } catch (error: SecurityException) {
+            error.javaClass.simpleName
+        }
+    }
 
     private val actionPipPlayPause = "com.predidit.kazumi.pip.PLAY_PAUSE"
     private val actionPipForward = "com.predidit.kazumi.pip.FORWARD"
@@ -59,6 +76,9 @@ class MainActivity: AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        frameGenerationValidationClient?.cancel()
+        frameGenerationValidationClient = null
+        frameGenerationProbeExecutor.shutdownNow()
         unregisterPipActionReceiverIfNeeded()
         super.onDestroy()
     }
@@ -110,6 +130,20 @@ class MainActivity: AudioServiceActivity() {
             }
         }
 
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            FRAME_GENERATION_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "probeVulkan" -> frameGenerationProbeExecutor.execute {
+                    val capabilities = probeVulkanCapabilities()
+                    runOnUiThread { result.success(capabilities) }
+                }
+                "validateOffscreen" -> startOffscreenValidation(result)
+                else -> result.notImplemented()
+            }
+        }
+
         pipChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PIP_CHANNEL)
         pipChannel?.setMethodCallHandler { call, result ->
             if (call.method == "isPictureInPictureSupported") {
@@ -157,6 +191,165 @@ class MainActivity: AudioServiceActivity() {
 
     private fun getAndroidSdkVersion(): Int {
         return Build.VERSION.SDK_INT
+    }
+
+    private fun probeVulkanCapabilities(): Map<String, Any> {
+        val vulkanVersion = systemFeatureVersion(
+            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
+        )
+        val vulkanHardwareLevel = systemFeatureVersion(
+            PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL,
+        )
+        val vulkanMajor = vulkanVersion ushr 22
+        val vulkanMinor = (vulkanVersion ushr 12) and 0x3ff
+        val vulkanPatch = vulkanVersion and 0xfff
+        val vulkan11 = (1 shl 22) or (1 shl 12)
+
+        val capabilities = mutableMapOf<String, Any>(
+            "androidSdk" to Build.VERSION.SDK_INT,
+            "vulkanVersion" to vulkanVersion,
+            "vulkanMajor" to vulkanMajor,
+            "vulkanMinor" to vulkanMinor,
+            "vulkanPatch" to vulkanPatch,
+            "vulkanHardwareLevel" to vulkanHardwareLevel,
+            "hasVulkan11" to (vulkanVersion >= vulkan11),
+            "nativeBackendLinked" to false,
+            "nativeExtensionProbeComplete" to false,
+            "hasExternalMemoryAhb" to false,
+            "hasTimelineSemaphore" to false,
+            "nativePrerequisitesReady" to false,
+            "transportBackendImplemented" to false,
+        )
+
+        val loadError = nativeFrameGenerationLoadError
+        if (loadError != null) {
+            capabilities["nativeProbeError"] = loadError
+            return capabilities
+        }
+
+        capabilities["nativeBackendLinked"] = true
+        try {
+            val native = JSONObject(probeNativeVulkanCapabilities())
+            capabilities["nativeExtensionProbeComplete"] =
+                native.optBoolean("probeComplete", false)
+            capabilities["nativeDeviceName"] = native.optString("deviceName", "")
+            capabilities["nativeDeviceApiVersion"] =
+                native.optInt("deviceApiVersion", 0)
+            capabilities["nativeDeviceApiMajor"] =
+                native.optInt("deviceApiMajor", 0)
+            capabilities["nativeDeviceApiMinor"] =
+                native.optInt("deviceApiMinor", 0)
+            capabilities["nativeDeviceApiPatch"] =
+                native.optInt("deviceApiPatch", 0)
+            capabilities["hasExternalMemoryAhb"] =
+                native.optBoolean("hasExternalMemoryAhb", false)
+            capabilities["hasTimelineSemaphore"] =
+                native.optBoolean("hasTimelineSemaphore", false)
+            capabilities["nativePrerequisitesReady"] =
+                native.optBoolean("nativePrerequisitesReady", false)
+            capabilities["transportBackendImplemented"] =
+                native.optBoolean("transportBackendImplemented", false)
+            capabilities["nativeProbeError"] = native.optString("error", "")
+        } catch (error: LinkageError) {
+            capabilities["nativeProbeError"] = error.javaClass.simpleName
+        } catch (error: RuntimeException) {
+            capabilities["nativeProbeError"] = error.javaClass.simpleName
+        }
+        return capabilities
+    }
+
+    private external fun probeNativeVulkanCapabilities(): String
+
+    private fun startOffscreenValidation(result: MethodChannel.Result) {
+        if (frameGenerationValidationClient != null) {
+            result.success(parseVulkanOffscreen(null, "isolated_validation_in_progress", 0))
+            return
+        }
+        lateinit var client: FrameGenerationValidationClient
+        client = FrameGenerationValidationClient(this) { isolated ->
+            if (frameGenerationValidationClient === client) {
+                frameGenerationValidationClient = null
+            }
+            result.success(
+                parseVulkanOffscreen(
+                    isolated.nativeJson,
+                    isolated.error,
+                    isolated.remoteProcessId,
+                ),
+            )
+        }
+        frameGenerationValidationClient = client
+        client.start()
+    }
+
+    private fun parseVulkanOffscreen(
+        nativeJson: String?,
+        isolatedError: String,
+        remoteProcessId: Int,
+    ): Map<String, Any> {
+        val validation = mutableMapOf<String, Any>(
+            "validationComplete" to false,
+            "noSurface" to false,
+            "isolatedProcess" to false,
+            "isolatedProcessId" to remoteProcessId,
+            "rgba16fReady" to false,
+            "rg16fReady" to false,
+            "shaderExecuted" to false,
+            "phase13Valid" to false,
+            "phase23Valid" to false,
+            "resourcesQuarantined" to false,
+            "phase13GpuNs" to 0L,
+            "phase23GpuNs" to 0L,
+            "transportBackendImplemented" to false,
+            "error" to "",
+        )
+        if (isolatedError.isNotEmpty()) {
+            validation["error"] = isolatedError
+            return validation
+        }
+        if (nativeJson == null) {
+            validation["error"] = "isolated_validation_missing_result"
+            return validation
+        }
+        try {
+            val native = JSONObject(nativeJson)
+            validation["isolatedProcess"] = true
+            validation["validationMarker"] =
+                native.optString("validationMarker", "")
+            validation["shaderSha256"] = native.optString("shaderSha256", "")
+            validation["timeoutPolicyMarker"] =
+                native.optString("timeoutPolicyMarker", "")
+            validation["validationComplete"] =
+                native.optBoolean("validationComplete", false)
+            validation["noSurface"] = native.optBoolean("noSurface", false)
+            validation["rgba16fReady"] =
+                native.optBoolean("rgba16fReady", false)
+            validation["rg16fReady"] = native.optBoolean("rg16fReady", false)
+            validation["shaderExecuted"] =
+                native.optBoolean("shaderExecuted", false)
+            validation["phase13Valid"] = native.optBoolean("phase13Valid", false)
+            validation["phase23Valid"] = native.optBoolean("phase23Valid", false)
+            validation["resourcesQuarantined"] =
+                native.optBoolean("resourcesQuarantined", false)
+            validation["phase13GpuNs"] = native.optLong("phase13GpuNs", 0L)
+            validation["phase23GpuNs"] = native.optLong("phase23GpuNs", 0L)
+            validation["phase13Red"] = native.optDouble("phase13Red", 0.0)
+            validation["phase23Red"] = native.optDouble("phase23Red", 0.0)
+            validation["deviceName"] = native.optString("deviceName", "")
+            validation["transportBackendImplemented"] = false
+            validation["error"] = native.optString("error", "")
+        } catch (error: LinkageError) {
+            validation["error"] = error.javaClass.simpleName
+        } catch (error: RuntimeException) {
+            validation["error"] = error.javaClass.simpleName
+        }
+        return validation
+    }
+
+    private fun systemFeatureVersion(featureName: String): Int {
+        return packageManager.systemAvailableFeatures
+            .firstOrNull { feature -> feature.name == featureName }
+            ?.version ?: 0
     }
 
     private fun enterAndroidFullscreen() {

@@ -1,0 +1,113 @@
+import java.nio.file.Files
+import java.security.MessageDigest
+
+group 'com.alexmercerind.media_kit_libs_android_video'
+version '1.0'
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+
+android {
+    if (project.android.hasProperty('namespace')) {
+        namespace 'com.alexmercerind.media_kit_libs_android_video'
+    }
+
+    compileSdkVersion 36
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        minSdkVersion 16
+    }
+
+}
+
+dependencies {
+    implementation fileTree(dir: "$buildDir/output", include: '*.jar')
+}
+
+task downloadDependencies {
+    doLast {
+        def outputDir = file("$buildDir/output")
+        if (outputDir.exists()) outputDir.deleteDir()
+        outputDir.mkdirs()
+
+        def filesToDownload = [
+            [
+                url: 'https://github.com/UmocxZzZ/ReKazumi/releases/download/afme-runtime-v1/rekazumi-afme-arm64-v8a.jar',
+                sha256: '3b84002a1ebd49854c3e66e3778ac522ca67ba803062e6271690b2b60c67fa6b',
+                name: 'rekazumi-afme-arm64-v8a.jar',
+            ],
+            [
+                url: 'https://github.com/Predidit/libmpv-android-video-build/releases/download/v1.2.6/default-armeabi-v7a.jar',
+                sha256: 'b539cc8684fb3e4a0be7a6cce75272e2b7c571fc14c9174786bb17fb338cfee2',
+                name: 'default-armeabi-v7a.jar',
+            ],
+            [
+                url: 'https://github.com/Predidit/libmpv-android-video-build/releases/download/v1.2.6/default-x86_64.jar',
+                sha256: '25a3cc1331326d41efb13a8da959eb14104eabe1b8a318e30c0f703444dcaf7c',
+                name: 'default-x86_64.jar',
+            ],
+            [
+                url: 'https://github.com/Predidit/libmpv-android-video-build/releases/download/v1.2.6/default-x86.jar',
+                sha256: '847120273bba862749143e58b22f625d229bb73b137ef9b38aa05f097a4509e8',
+                name: 'default-x86.jar',
+            ],
+        ]
+
+        filesToDownload.each { fileInfo ->
+            def cached = file("$buildDir/afme-runtime-v1/${fileInfo.name}")
+            if (cached.exists() && sha256(cached) != fileInfo.sha256) {
+                cached.delete()
+            }
+            if (!cached.exists()) {
+                cached.parentFile.mkdirs()
+                cached.withOutputStream { output ->
+                    output << new URL(fileInfo.url).openStream()
+                }
+            }
+            def actual = sha256(cached)
+            if (actual != fileInfo.sha256) {
+                cached.delete()
+                throw new GradleException(
+                    "SHA-256 verification failed for ${fileInfo.name}: ${actual}")
+            }
+            copy {
+                from cached
+                into outputDir
+            }
+        }
+    }
+}
+
+String sha256(File file) {
+    return MessageDigest.getInstance('SHA-256')
+        .digest(Files.readAllBytes(file.toPath()))
+        .encodeHex()
+        .toString()
+}
+
+// The host application's assemble task does not invoke this library's assemble
+// task. Hook dependency preparation into preBuild so the native libmpv JAR is
+// present before AGP resolves and merges JNI libraries into the APK.
+preBuild.dependsOn(downloadDependencies)

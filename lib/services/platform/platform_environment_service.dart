@@ -43,4 +43,5 @@ class PlatformEnvironmentService {
       return 0;
     }
   }
+
 }

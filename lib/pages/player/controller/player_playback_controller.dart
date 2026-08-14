@@ -1,11 +1,14 @@
 // ignore_for_file: library_private_types_in_public_api
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/pages/player/controller/player_debug_controller.dart';
+import 'package:kazumi/pages/player/controller/player_frame_interpolation.dart';
+import 'package:kazumi/pages/player/controller/player_frame_generation_session.dart';
 import 'package:kazumi/pages/player/controller/player_super_resolution.dart';
 import 'package:kazumi/services/shaders/shader_asset_service.dart';
 import 'package:kazumi/utils/constants.dart';
@@ -21,6 +24,7 @@ import 'package:mobx/mobx.dart';
 import 'package:kazumi/utils/device.dart';
 import 'package:kazumi/utils/media.dart';
 import 'package:kazumi/services/platform/platform_environment_service.dart';
+import 'package:kazumi/services/platform/frame_generation_capability_service.dart';
 
 part 'player_playback_controller.g.dart';
 
@@ -59,14 +63,18 @@ abstract class _PlayerPlaybackController with Store {
     required this.debug,
     required this.videoUrl,
     required this.isLocalPlayback,
-  });
+    FrameGenerationCapabilityService? frameGenerationCapabilityService,
+  }) : frameGenerationCapabilityService = frameGenerationCapabilityService ??
+            FrameGenerationCapabilityService();
 
   final ShaderAssetService shaderAssetService;
   final PlayerDebugController debug;
   final String Function() videoUrl;
   final bool Function() isLocalPlayback;
+  final FrameGenerationCapabilityService frameGenerationCapabilityService;
   final PlayerScreenshotService screenshotService =
       const PlayerScreenshotService();
+  final FrameGenerationSession frameGeneration = FrameGenerationSession();
   late final PlaybackCachePolicy cachePolicy = PlaybackCachePolicy(
     isLocalPlayback: isLocalPlayback,
     currentPlayer: () => mediaPlayer,
@@ -90,6 +98,8 @@ abstract class _PlayerPlaybackController with Store {
   /// 当前超分辨率模式
   @observable
   SuperResolutionMode superResolutionMode = SuperResolutionMode.off;
+
+  FrameInterpolationMode frameInterpolationMode = FrameInterpolationMode.off;
 
   @observable
   double volume = -1;
@@ -134,6 +144,7 @@ abstract class _PlayerPlaybackController with Store {
 
   @action
   void resetForInit() {
+    frameGeneration.reset();
     playing = false;
     loading = true;
     isBuffering = true;
@@ -239,6 +250,38 @@ abstract class _PlayerPlaybackController with Store {
     superResolutionMode = SuperResolutionMode.fromStorageValue(
       GStorage.getSetting(SettingsKeys.defaultSuperResolutionMode),
     );
+    final storedFrameInterpolationMode =
+        GStorage.getSetting<int>(SettingsKeys.defaultFrameInterpolationMode);
+    frameInterpolationMode = FrameInterpolationMode.fromStorageValue(
+      storedFrameInterpolationMode,
+    );
+    if (Platform.isAndroid) {
+      frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+      final capabilities = await frameGenerationCapabilityService.probe();
+      frameGeneration.markUnavailable(capabilities.unavailableReason);
+    }
+    if (frameInterpolationMode.enabled && !frameInterpolationMode.available) {
+      if (frameGeneration.snapshot.state !=
+          FrameGenerationSessionState.unavailable) {
+        frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+        frameGeneration.markUnavailable('no validated Vulkan backend');
+      }
+      await GStorage.putSetting<int>(
+        SettingsKeys.defaultFrameInterpolationMode,
+        FrameInterpolationMode.off.storageValue,
+      );
+      frameInterpolationMode = FrameInterpolationMode.off;
+      KazumiLogger().w(
+        'PlayerController: disabled persisted 3x frame generation after '
+        'device-level GPU instability; using original-frame playback',
+        forceLog: true,
+      );
+    }
+    KazumiLogger().i(
+      'PlayerController: frame interpolation setting '
+      'stored=$storedFrameInterpolationMode resolved=${frameInterpolationMode.name}',
+      forceLog: true,
+    );
     hAenable = GStorage.getSetting(SettingsKeys.hAenable);
     androidEnableOpenSLES =
         GStorage.getSetting(SettingsKeys.androidEnableOpenSLES);
@@ -274,6 +317,7 @@ abstract class _PlayerPlaybackController with Store {
         isCurrentPlayer: isCurrentPlayer,
         playerDebugMode: playerDebugMode,
       );
+      debug.reportFrameGeneration(frameGeneration.snapshot);
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
       }
@@ -362,10 +406,17 @@ abstract class _PlayerPlaybackController with Store {
         }
       }
 
+      if (Platform.isAndroid && frameInterpolationMode.enabled) {
+        // AFME is an OpenGL ES driver feature. Keep hardware decoding, but
+        // force mpv's GPU renderer onto the Android EGL context.
+        videoRenderer = 'gpu';
+      }
+
       if (videoRenderer == 'mediacodec_embed') {
         hAenable = true;
         hardwareDecoder = 'mediacodec';
         superResolutionMode = SuperResolutionMode.off;
+        frameInterpolationMode = FrameInterpolationMode.off;
       }
 
       videoController ??= VideoController(
@@ -378,6 +429,28 @@ abstract class _PlayerPlaybackController with Store {
           androidAttachSurfaceAfterVideoParameters: false,
         ),
       );
+      await pp.waitForVideoControllerInitializationIfAttached;
+      if (!isCurrentPlayer(player)) {
+        return await _discardIfNotCurrent(candidate);
+      }
+
+      // Select the EGL backend before media is opened. AndroidVideoController
+      // will still recreate --vo once its Surface becomes available, so AFME
+      // itself is deliberately enabled after the first frame below.
+      if (frameInterpolationMode.enabled) {
+        await _setMpvOption(pp, 'gpu-api', 'opengl');
+        await _setMpvOption(pp, 'gpu-context', 'android');
+        if (!await setFrameInterpolation(
+          frameInterpolationMode,
+          player: player,
+        )) {
+          throw StateError('Failed to configure Adreno AFME before media open');
+        }
+      }
+      if (!isCurrentPlayer(player)) {
+        return await _discardIfNotCurrent(candidate);
+      }
+
       player.setPlaylistMode(PlaylistMode.none);
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
@@ -417,6 +490,18 @@ abstract class _PlayerPlaybackController with Store {
       );
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
+      }
+
+      if (frameInterpolationMode.enabled) {
+        // Do not await this here: the Video widget is mounted only after this
+        // method returns and loading is cleared by PlayerController. Waiting
+        // synchronously would prevent the Android Surface (and first frame)
+        // from ever existing.
+        unawaited(_enableFrameInterpolationOnLiveVideoOutput(
+          frameInterpolationMode,
+          player,
+          videoController!,
+        ));
       }
 
       if (cachePolicy.networkForced) {
@@ -475,6 +560,120 @@ abstract class _PlayerPlaybackController with Store {
       superResolutionMode = mode;
     } catch (e) {
       KazumiLogger().w('PlayerController: failed to set shader', error: e);
+    }
+  }
+
+  Future<bool> setFrameInterpolation(
+    FrameInterpolationMode mode, {
+    Player? player,
+  }) async {
+    final currentPlayer = player ?? mediaPlayer;
+    if (currentPlayer == null) return false;
+
+    try {
+      final pp = currentPlayer.platform as NativePlayer;
+      await pp.waitForPlayerInitialization;
+      await pp.waitForVideoControllerInitializationIfAttached;
+      if (!identical(mediaPlayer, currentPlayer)) return false;
+
+      if (!mode.enabled) {
+        await _setMpvOption(pp, 'adreno-frame-generation', 'no');
+        await _setMpvOption(pp, 'interpolation', 'no');
+        await _setMpvOption(pp, 'video-sync', 'audio');
+        await _setMpvOption(pp, 'display-fps-override', '0');
+        frameInterpolationMode = FrameInterpolationMode.off;
+        frameGeneration.reset();
+        debug.reportFrameGeneration(frameGeneration.snapshot);
+        return true;
+      }
+
+      if (!mode.available) {
+        frameGeneration.beginProbe(FrameGenerationBackend.vulkan);
+        frameGeneration.markUnavailable('no validated Vulkan backend');
+        debug.reportFrameGeneration(frameGeneration.snapshot);
+        return false;
+      }
+
+      if (!Platform.isAndroid) {
+        throw UnsupportedError('Adreno AFME is only available on Android');
+      }
+
+      // Keep mpv's source/audio clock untouched. The patched VO submits the
+      // original, 1/3 and 2/3 phases inside each source frame's PTS window.
+      await _setMpvOption(pp, 'display-fps-override', '0');
+      await _setMpvOption(pp, 'video-sync', 'audio');
+      await _setMpvOption(pp, 'interpolation', 'no');
+      await _setMpvOption(pp, 'adreno-frame-generation', 'yes');
+      final applied = await pp.getProperty(
+        'options/adreno-frame-generation',
+      );
+      if (applied != 'yes') {
+        throw StateError(
+          'mpv rejected adreno-frame-generation=yes (readback=$applied)',
+        );
+      }
+      frameInterpolationMode = mode;
+      KazumiLogger().i(
+        'PlayerController: live VO source-timed 3x AFME readback=$applied; '
+        'video-sync=audio, interpolation=no, display-fps-override=0',
+        forceLog: true,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      frameInterpolationMode = FrameInterpolationMode.off;
+      frameGeneration.fault(error.toString());
+      debug.reportFrameGeneration(frameGeneration.snapshot);
+      KazumiLogger().e(
+        'PlayerController: failed to enable fixed 3x Adreno AFME frame generation',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
+  }
+
+  Future<void> _setMpvOption(
+    NativePlayer player,
+    String name,
+    String value,
+  ) async {
+    // Use mpv's explicit option namespace. A bare property normally bridges to
+    // an option with the same name, but media_kit discards the native return
+    // code of mpv_set_property_string. The command path plus options/ prefix
+    // makes the intended global option write unambiguous.
+    await player.command(['set', 'options/$name', value]);
+    final applied = await player.getProperty('options/$name');
+    final matches =
+        applied == value || (value == '0' && double.tryParse(applied) == 0.0);
+    if (!matches) {
+      throw StateError('mpv option $name=$value read back as $applied');
+    }
+  }
+
+  Future<void> _enableFrameInterpolationOnLiveVideoOutput(
+    FrameInterpolationMode mode,
+    Player player,
+    VideoController controller,
+  ) async {
+    try {
+      // AndroidVideoController changes vo to null and back to gpu when its
+      // Surface is attached. This signal arrives after the Video widget has a
+      // real size, so the option update targets the VO actually presenting.
+      await controller.waitUntilFirstFrameRendered;
+      if (!isCurrentPlayer(player) || !identical(videoController, controller)) {
+        return;
+      }
+      if (!await setFrameInterpolation(mode, player: player)) {
+        throw StateError('Failed to configure Adreno AFME on the live VO');
+      }
+    } catch (error, stackTrace) {
+      if (!isCurrentPlayer(player)) return;
+      KazumiLogger().e(
+        'PlayerController: failed to apply AFME after Android Surface attach',
+        error: error,
+        stackTrace: stackTrace,
+        forceLog: true,
+      );
     }
   }
 

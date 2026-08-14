@@ -1,0 +1,97 @@
+name: Build ReKazumi Vulkan framegen prototype (arm64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/anime4k-rife-3x
+    paths:
+      - native/libmpv/**
+      - .github/workflows/build-rife-libmpv.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: docker.io/debian:bookworm-slim
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout ReKazumi
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/bookworm-backports.list
+          apt-get update
+          apt-get install -y sudo git gcc-multilib libc-dev make automake pkg-config libtool nasm python3-jsonschema wget python3-jinja2 zip unzip python3-pip ca-certificates cmake ninja-build
+          apt-get install -y -t bookworm-backports meson
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          link-to-sdk: true
+          ndk-version: r27c
+
+      - name: Checkout pinned libmpv build
+        run: |
+          git clone https://github.com/Predidit/libmpv-android-video-build.git /tmp/libmpv-build
+          git -C /tmp/libmpv-build checkout 045cd0f584769a6ed8967624443045b4a33b122d
+
+      - name: Prepare build scripts
+        run: |
+          mkdir -p /tmp/libmpv-build/buildscripts/sdk
+          ln -s "${ANDROID_HOME}" /tmp/libmpv-build/buildscripts/sdk/android-sdk-linux
+          sed -i -e 's/sudo//g' /tmp/libmpv-build/buildscripts/*.sh
+          sed -i 's/download-sdk\.sh/download-sdk-debian\.sh/g' /tmp/libmpv-build/buildscripts/download.sh
+          sed -i -e '/git reset --hard/d' /tmp/libmpv-build/buildscripts/patch.sh
+          chmod +x /tmp/libmpv-build/buildscripts/include/download-sdk-debian.sh
+          chmod +x native/libmpv/build_arm64.sh
+
+      - name: Build arm64 off-device Vulkan prototype
+        run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
+
+      - name: Verify prototype binary markers
+        run: |
+          jar=/tmp/libmpv-build/buildscripts/rekazumi-vulkan-framegen-prototype-arm64-v8a.jar
+          test -s "$jar"
+          unzip -l "$jar"
+          mkdir -p /tmp/rekazumi-prototype-check
+          unzip -p "$jar" lib/arm64-v8a/libmpv.so > /tmp/rekazumi-prototype-check/libmpv.so
+          test -s /tmp/rekazumi-prototype-check/libmpv.so
+          sha256sum "$jar" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "rekazumi-frame-generation" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi Vulkan fixed 3x frame generation prototype active" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi frame generation disabled" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi global motion cost" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi global motion reduce" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi block motion cost" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi block motion reduce" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi frame generation helper creation failed" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "global-ms=" /tmp/rekazumi-prototype-check/libmpv.so
+          echo "Required Vulkan prototype and fail-closed markers found"
+          if grep -aqE "GL_QCOM_|glExtrapolateTex2DQCOM|glTexEstimateMotionQCOM" /tmp/rekazumi-prototype-check/libmpv.so; then
+            echo "Rejected QCOM frame-generation entry point found" >&2
+            exit 1
+          fi
+
+      - name: Upload libmpv artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rekazumi-vulkan-framegen-prototype-arm64
+          path: /tmp/libmpv-build/buildscripts/rekazumi-vulkan-framegen-prototype-arm64-v8a.jar
+          if-no-files-found: error
