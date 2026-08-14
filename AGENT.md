@@ -1030,3 +1030,41 @@
   `mixed:10808`. The push may start only the isolated native compile workflow;
   that workflow has no release write permission and must not be treated as a
   device-ready runtime even if compilation succeeds.
+- The amended prototype commit is `3a6a0c4`; push through `mixed:10808`
+  succeeded. The first two `gh run list` queries accidentally omitted the fork
+  selector and returned upstream `Predidit/Kazumi` history. This was a read-only
+  repository-targeting mistake. Corrected every following query to explicit
+  `-R UmocxZzZ/ReKazumi` and found native run `31766051267` at the expected
+  commit.
+- Native run `31766051267` completed successfully in 11m15s. Patch application,
+  pinned mpv/libplacebo Android arm64 compilation, helper packaging, prototype
+  JAR creation, and artifact upload all passed. This proves C API/ABI and link
+  compatibility; it does not compile the dynamically generated GLSL at runtime
+  and does not prove visual correctness, performance, or display safety.
+- Several 60-second local `gh run watch` windows timed out while the remote job
+  continued normally. A live-log API attempt first incorrectly supplied the
+  unsupported `gh api -R` flag; the corrected explicit endpoint returned
+  `BlobNotFound`/404 because GitHub does not expose the job-log blob until the
+  job is complete. Neither monitoring mistake changed remote or local state.
+- Artifact metadata is valid: id `9206548985`, name
+  `rekazumi-vulkan-framegen-prototype-arm64`, size 9,090,238 bytes. The first
+  local `gh run download` timed out after 184 seconds, left no destination, and
+  left one low-CPU `gh` process. Stopped that exact PID; the following PID check
+  returned exit 1 because the process was successfully absent. No partial file
+  was accepted.
+- A second download with explicit `HTTP_PROXY`/`HTTPS_PROXY` at
+  `127.0.0.1:10808` failed explicitly on the Actions Azure blob URL with a TLS
+  handshake timeout. A third authenticated `curl` retry through the same proxy
+  exhausted its 300-second limit and left only a zero-byte untracked
+  `artifact.zip`; it is invalid and must never be unpacked or used. Do not spend
+  more development time retrying the external blob channel.
+- Recovery plan: move the required JAR structure, SHA-256, required Vulkan
+  prototype marker, option marker, fail-closed marker, and rejected-QCOM-string
+  checks into the native CI job before artifact upload. This makes binary
+  validation authoritative without a local download. It still must not publish
+  the prototype or update the app runtime pin.
+- Added the pre-upload binary gate and created local commit `a12cc56` (`ci:
+  verify Vulkan framegen prototype binary`). Amend this operation record into
+  the same unpushed commit, then push it through the proxy and require the new
+  native run to pass the marker/hash gate. The resulting hashes may be trusted
+  from CI logs even if the local Azure artifact download remains unavailable.

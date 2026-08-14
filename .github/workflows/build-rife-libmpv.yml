@@ -65,6 +65,24 @@ jobs:
       - name: Build arm64 off-device Vulkan prototype
         run: native/libmpv/build_arm64.sh /tmp/libmpv-build "${GITHUB_WORKSPACE}"
 
+      - name: Verify prototype binary markers
+        run: |
+          jar=/tmp/libmpv-build/buildscripts/rekazumi-vulkan-framegen-prototype-arm64-v8a.jar
+          test -s "$jar"
+          unzip -l "$jar"
+          mkdir -p /tmp/rekazumi-prototype-check
+          unzip -p "$jar" lib/arm64-v8a/libmpv.so > /tmp/rekazumi-prototype-check/libmpv.so
+          test -s /tmp/rekazumi-prototype-check/libmpv.so
+          sha256sum "$jar" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "rekazumi-frame-generation" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi Vulkan fixed 3x frame generation prototype active" /tmp/rekazumi-prototype-check/libmpv.so
+          grep -aqF "ReKazumi frame generation disabled" /tmp/rekazumi-prototype-check/libmpv.so
+          echo "Required Vulkan prototype and fail-closed markers found"
+          if grep -aqE "GL_QCOM_|glExtrapolateTex2DQCOM|glTexEstimateMotionQCOM" /tmp/rekazumi-prototype-check/libmpv.so; then
+            echo "Rejected QCOM frame-generation entry point found" >&2
+            exit 1
+          fi
+
       - name: Upload libmpv artifact
         uses: actions/upload-artifact@v4
         with:
