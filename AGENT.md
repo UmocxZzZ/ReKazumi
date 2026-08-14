@@ -871,3 +871,56 @@
   timeout and fail-closed gates, tests, CI packaging marker check, and journal.
   Amend this operation record into the same unpushed commit, then push through
   the local proxy and require the complete Android CI gate to pass.
+
+### Transport reference audit (2026-08-14)
+
+- While native-probe CI runs, downloaded two reference repositories through
+  `mixed:10808` into untracked `work/references/` and checked out detached exact
+  commits: `lsfg-vk-android` at
+  `3e89e5439a98f55d5acb003d20039426ab24e69c` and
+  `LSFG-Android-Application` at
+  `b84754199823615d32d65fe33ea59481dca88dcf`. They are read-only research
+  inputs and must never be staged into ReKazumi.
+- Initial sandbox-side `git rev-parse` was blocked by Git's dubious-ownership
+  protection because the approved network clone ran as the host user. Did not
+  modify global `safe.directory`; repeated each read with a command-local exact
+  safe-directory value and verified both hashes.
+- License audit corrected an earlier overconfident assumption. The pinned
+  Android application snapshot's root `LICENSE` contains GPL-3.0, while its
+  README claims the application is under a custom no-commercial/no-app-store
+  license. Treat this contradiction as restrictive: use the application only
+  to understand observable architecture and copy none of its source. Updated
+  `docs/frame-generation-architecture.md` accordingly. The separately pinned
+  `lsfg-vk-android` and its framegen directory state MIT, but the actual LSFG
+  shader payload still requires a user-owned proprietary `Lossless.dll` and is
+  not a redistributable default algorithm.
+- Native-probe commit was amended to final id `1d14a0b`, pushed through the
+  proxy, and CI run `31764268658` passed in 10m29s. It passed formatting, 146
+  tests, analysis, CMake/arm64 APK build, exact safe `libmpv` checks, packaged
+  `librekazumi_framegen.so` marker verification, package id, and upload.
+- Added HopperRender/mpv-frame-interpolator as a third untracked read-only
+  reference at exact commit
+  `0d586cd4a78f2905f65b82fb6ac87e2829477479`. The first license inspection
+  guessed a nonexistent plain `LICENSE` filename and returned exit 1; the repo
+  actually carries `LICENSE.GPL` and `LICENSE.LGPL`, and Meson declares
+  GPL2+/LGPL2.1+, compatible with ReKazumi GPL. Hash was confirmed using the
+  same command-local safe-directory handling. No reference source was copied.
+- HopperRender confirms a no-model path: hierarchical block matching,
+  bidirectional warp, occlusion/artifact correction, and blend. Its desktop
+  OpenCL/CPU integration is not suitable directly. Updated the architecture
+  decision to an APK-bundled Vulkan compute implementation inside mpv
+  `gpu-next`/libplacebo's existing device and queue; no runtime GitHub model and
+  no proprietary DLL. LSFG remains reference/optional research only.
+- Current safe `libmpv.so` contains `gpu-next`, libplacebo, Android Vulkan, and
+  Vulkan hardware-decode symbols, so a same-device path is available. One
+  Windows `rg` inspection used shell-style wildcards in path arguments and
+  returned an invalid-path error after producing the useful first search; the
+  follow-up used explicit paths. The `work/mpv` tree still contains the prior
+  rejected QCOM experiment as four dirty source files. Preserve it unchanged
+  until that patch is cleanly isolated; do not build or ship those dirty files
+  as the new backend.
+- Created commit `41947a5` (`docs: select open Vulkan frame generation path`)
+  containing only the license/reference audit, resolved algorithm decision,
+  and journal. Amend this operation record into the same unpushed docs commit;
+  then push through the proxy. These paths do not trigger Android CI, whose
+  source revision `1d14a0b` has already passed the complete gate.

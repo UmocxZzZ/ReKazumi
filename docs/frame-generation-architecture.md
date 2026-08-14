@@ -16,8 +16,10 @@ Anime4K 与帧生成全程驻留 GPU，120 Hz 只负责呈现。
   共享、Vulkan 队列所有权转移、有界队列、vsync pacing、device-lost 自动
   bypass 与真实/总 FPS 诊断。其完整应用子目录有非商业限制，不能直接复制。
 - [LSFG-Android-Application](https://github.com/FrankBarretta/LSFG-Android-Application/tree/b84754199823615d32d65fe33ea59481dca88dcf)
-  是 GPL-3.0 独立应用，与 ReKazumi 的 GPL-3.0 兼容。它证明了
-  `ImageReader -> AHardwareBuffer -> Vulkan -> ANativeWindow` 的实机路径。
+  证明了 `ImageReader -> AHardwareBuffer -> Vulkan -> ANativeWindow` 的实机路径，
+  但固定提交的许可声明互相矛盾：根 `LICENSE` 是 GPL-3.0，README 却声明应用代码
+  受“禁止商业使用/应用商店发布”的自定义许可约束。因此只把它当行为与架构参考，
+  在上游澄清前不复制其应用源码。
 - [lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android/tree/3e89e5439a98f55d5acb003d20039426ab24e69c)
   的 Android AHardwareBuffer 扩展为 MIT，可作为资源共享接口参考。但 LSFG
   算法 shader 必须由用户合法持有的 `Lossless.dll` 提取，ReKazumi 不能内置、
@@ -27,8 +29,8 @@ Anime4K 与帧生成全程驻留 GPU，120 Hz 只负责呈现。
   OpenCL，尚未证明能在 Android/Adreno 上达到实时速度。只能借鉴算法结构。
 
 结论：现成且已证明能在 Android 实时运行的方案目前只有 LSFG 路线，但它依赖
-用户提供专有 shader。传输、同步和呈现架构可以立即采用；最终算法后端必须在
-“用户提供 Lossless.dll 的 LSFG”与“重新实现完全开源 Vulkan 光流”之间明确选择。
+用户提供专有 shader。它可作为传输与同步的行为参考，但不作为 ReKazumi 默认
+算法后端。
 
 ## ReKazumi 专用流水线
 
@@ -98,13 +100,18 @@ MediaCodec original frames (source PTS)
 6. 最后接 Anime4K：Restore 可在源帧率前置，Upscale 在三相画面后置。
 7. 通过离屏、短时呈现、长时稳定性三道门后，设置页才能把 3× 标记为可用。
 
-## 尚需产品决定
+## 算法决定
 
-正式帧生成算法只能二选一：
+默认后端确定为**完全开源、随 APK 内置的 Vulkan 块匹配/光流**，不在运行时从
+GitHub 下载模型，也不要求用户提供专有 DLL。以 HopperRender 固定提交的分层块
+匹配、双向 warp、遮挡修正和 blend 作为 GPL 兼容的算法参考，但不移植其桌面
+OpenCL/CPU 文件路径；实现落在 mpv `gpu-next` / libplacebo 已有的同一 Vulkan
+device/queue 内，以 SPIR-V compute pass 运行。
 
-- **LSFG adapter**：最快获得已证明的 Android 效果，但用户必须自行提供合法
-  `Lossless.dll`，ReKazumi 不得分发其 shader。
-- **完全开源 Vulkan 光流**：无外部模型或 DLL，分发最干净，但需要自行实现和
-  调优，HopperRender 只能作为算法参考，实时质量尚未验证。
+LSFG 只保留为未来可选适配器研究，不是默认交付路径。其 Android 应用使用独立
+VkDevice 和跨设备 `waitIdle` 的做法不能照搬到 ReKazumi；这会重新引入已经观察到
+的播放变慢与等待链问题。
 
-在这个决定前，不应再次把任何实验算法接到手机的最终显示路径。
+实现仍按安全门分阶段：先离屏生成和 GPU timing，再做 duplicate/cut/deadline
+bypass，最后才连接呈现。任何阶段都不能因为“探测通过”就把 3× 标记为可用；
+只有 `generated-present` 持续增长且输出相位验证为 `1/3`、`2/3` 才能开放设置。
