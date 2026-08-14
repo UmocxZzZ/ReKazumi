@@ -1492,3 +1492,19 @@
   validation gate`), with unrelated `pubspec.lock` and generated directories
   still outside the commit. Amend this journal entry into that unpushed commit,
   push the resulting hash through `mixed:10808`, and require its Android CI.
+- The amended implementation commit is `315efef8b42cdf19717d9b2b0ebba8efd8fbf7d1`;
+  push through `mixed:10808` succeeded. Exact-head Android run `31774553107`
+  started, while the unrelated PR workflow was skipped as expected. Five
+  bounded 59-second `gh run watch` windows expired locally while the same
+  remote cold Android build continued. These were observation timeouts, not
+  CI failures or retries; status queries consistently showed the first eight
+  steps successful and one uninterrupted arm64 build in progress.
+- Run `31774553107` then completed successfully. Its cold arm64 build passed in
+  7m16s; exact embedded-shader reproduction, packaged validation/timeout/shader
+  markers, forbidden presentation-symbol check, tests, analysis, and APK upload
+  all passed. Uploaded artifact `rekazumi-safe-android-arm64` has id
+  `9209537676`, size 49,457,784 bytes, is unexpired, and expires 2026-11-12.
+  This remote artifact is CI evidence only: it has not been downloaded,
+  installed, launched, or promoted to a device candidate. Next phase is to
+  design an explicit one-shot device invocation that exposes only structured
+  offscreen diagnostics and cannot enter playback or presentation paths.
