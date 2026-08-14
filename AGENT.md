@@ -1211,3 +1211,85 @@
   commit `66014f2` (`feat: isolate Vulkan framegen renderer`). Amend this result
   into that still-unpushed commit, then push through `mixed:10808` and monitor
   the resulting upload-only native workflow to completion.
+- The amended renderer-isolation commit is `c37e138`; push through the local
+  proxy succeeded. Upload-only native run `31769536108` started at the exact
+  head `c37e138d36dec367bcb50c0889d3456b9b63388d`; the unrelated PR workflow was
+  skipped as expected. The app runtime pin and phone remain untouched.
+- Architecture review while CI runs found that the hierarchical local-refine
+  shader still serializes all 289 candidates and five taps inside each block
+  invocation. Although this preserves full resolution and search radius, it
+  underuses GPU parallelism and could recreate the slow-playback failure at a
+  different layer. Planned isolated optimization: calculate a 17x17 candidate
+  atlas in parallel, then reduce that atlas once per 16x16 block. At 1080p the
+  extra RGBA16F scratch texture is roughly 9 MB. Keep the same +/-16/two-pixel
+  radius, five taps, full-resolution warp, duplicate/cut scores, source timing,
+  and 3x quality; do not reduce resolution or alter the shipped runtime.
+- Implemented the parallel local candidate atlas only in the isolated pinned
+  mpv source. Each atlas invocation evaluates one block/candidate pair with the
+  unchanged five taps; a separate per-block reduction selects the best forward
+  and backward vectors and preserves the same scores. Source-diff whitespace
+  validation passes. Added equivalent explicit-binding validation shaders in
+  untracked `work/shader-validation`; NDK 27.2 `glslc` compiled both for Vulkan
+  1.1. Local-cost SPIR-V is 3,120 bytes with SHA-256
+  `d150366b4364e2680eba5d1522d73ea9b003c2c2300ef1094e27d74373ddb008`;
+  local-reduce SPIR-V is 2,624 bytes with SHA-256
+  `9a5178688d01fe054c54728d5646d21adaa9e5172fd8a22c7ac15310386e9938`.
+  These generated validation files remain untracked and must not be staged.
+- The first regeneration of the enlarged contextual patch silently exceeded
+  the orchestration output budget; the captured diff was truncated even though
+  the helper script found a valid beginning and wrote 888 lines. Fresh checkout
+  `work/mpv-vulkan-patch-check-8` then correctly rejected it as corrupt at line
+  741. This validation failure prevents staging or CI use. Regenerate from the
+  same pinned source with an explicitly larger output budget and recreate a new
+  clean validation checkout; never repair hunk counts by hand.
+- A second one-shot regeneration with a larger outer budget still contained an
+  inner tool truncation marker at patch line 468, collapsing two descriptor
+  lines into one; apply-check again rejected the hunk at line 741. Two attempted
+  `apply_patch` replacements of that corrupted line failed safely because the
+  marker's mojibake text did not match byte-for-byte. They changed nothing.
+  Read-only line counting found the affected hunk declared 542 new lines but
+  contained 541, and direct source-vs-patch comparison located the inserted
+  truncation marker. This was a transfer/capture defect, not a Git diff defect.
+- Corrected the process without shell file writes or manual hunk edits: queried
+  the source diff in three bounded 350-line chunks, asserted exact chunk sizes
+  `350/350/189`, rejected any truncation marker, then reassembled all 889 lines
+  through `apply_patch`. The existing clean `work/mpv-vulkan-patch-check-8`
+  then passed apply-check, actual application, and patched-source whitespace
+  validation. The intended diff is still exactly the three mpv files, now 677
+  insertions and 11 deletions. Renderer-isolation run `31769536108` remains in
+  the native compile step with every preceding step successful.
+- A 59-second local `gh run watch` observation window expired while the remote
+  renderer-isolation job continued normally. A following explicit status query
+  confirmed the job was still compiling, not failed. Run `31769536108` then
+  completed successfully in 12m23s: arm64 compile, helper-renderer marker,
+  prior global/timing/fail-closed markers, rejected-QCOM absence, and upload all
+  passed. JAR SHA-256 is
+  `85fb800821ab312cf713612f1f1b151783701e6a8580e31f8b4d51e4ddca1c33`;
+  contained `libmpv.so` SHA-256 is
+  `730bbc96d63a5d179daf7a2b1e80252114cef8b80e80016a9fa26780fe60352f`.
+  Artifact id `9207808743` is 9,093,293 bytes and unexpired. The app pin remains
+  unchanged, so this result cannot run on the phone.
+- Tightened the parallel-search scratch formats before its native build. Added
+  a fail-closed RG16F allocator and use it for global costs, the local candidate
+  atlas, and per-block scores; motion/source/output textures remain RGBA16F.
+  Thus the 1080p local atlas is roughly 9.4 MB rather than 18.9 MB, with no
+  quality or search-radius change. Recompiled the equivalent Vulkan 1.1
+  shaders: global cost is 2,744 bytes SHA-256
+  `a933cc910ad27688c8f974f3184300a56824fdec86ee99357e4a4491f3b238ff`,
+  local cost is 3,128 bytes
+  `a9c8edece852cf4491cb7693361a6ac20c8db665d87ce497bfebbd89a936a176`,
+  and local reduce is 2,684 bytes
+  `bf150e4166686110654d8bdec932abe0ad376801864fae24ae2d95e05667c7a2`.
+- Regenerated the final 907-line contextual patch through the bounded-chunk
+  method. Fresh pinned checkout `work/mpv-vulkan-patch-check-9` passed
+  apply-check, actual application, and patched-source whitespace validation;
+  the diff remains exactly the three intended mpv files with 695 insertions and
+  11 deletions. Planned Git operation: stage only the two strengthened CI
+  markers, updated mpv patch, and this journal; create/push a separate local
+  candidate-parallelization commit, then require its upload-only native compile
+  and both new block-motion binary markers to pass. No APK/device operation.
+- Staged exactly the three planned paths; cached checks outside the conventional
+  patch container passed and unrelated paths remained excluded. Created local
+  commit `233bc9d` (`perf: parallelize Vulkan block motion search`). Amend this
+  result into the still-unpushed commit, push through `mixed:10808`, and monitor
+  the resulting native compile/binary gate to completion.

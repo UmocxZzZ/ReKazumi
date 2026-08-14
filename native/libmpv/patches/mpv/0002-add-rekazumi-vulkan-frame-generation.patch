@@ -125,7 +125,7 @@ index a98b0f949..ae3e71cee 100644
  double vo_get_vsync_interval(struct vo *vo);
  double vo_get_estimated_vsync_interval(struct vo *vo);
 diff --git a/video/out/vo_gpu_next.c b/video/out/vo_gpu_next.c
-index 3f0b18f4d..8e2204474 100644
+index 3f0b18f4d..5cd0d8d9d 100644
 --- a/video/out/vo_gpu_next.c
 +++ b/video/out/vo_gpu_next.c
 @@ -21,13 +21,19 @@
@@ -148,7 +148,7 @@ index 3f0b18f4d..8e2204474 100644
  #include "config.h"
  #include "common/common.h"
  #include "misc/io_utils.h"
-@@ -118,8 +124,29 @@ struct priv {
+@@ -118,8 +124,31 @@ struct priv {
      pl_log pllog;
      pl_gpu gpu;
      pl_renderer rr;
@@ -159,6 +159,7 @@ index 3f0b18f4d..8e2204474 100644
 +    pl_tex framegen_source[2];
 +    pl_tex framegen_global_cost;
 +    pl_tex framegen_global;
++    pl_tex framegen_local_cost;
 +    pl_tex framegen_motion;
 +    pl_tex framegen_score;
 +    pl_tex framegen_output[2];
@@ -173,12 +174,13 @@ index 3f0b18f4d..8e2204474 100644
 +    uint64_t framegen_bypasses;
 +    uint64_t framegen_global_cost_ns;
 +    uint64_t framegen_global_reduce_ns;
-+    uint64_t framegen_motion_ns;
++    uint64_t framegen_local_cost_ns;
++    uint64_t framegen_local_reduce_ns;
 +    uint64_t framegen_warp_ns;
      pl_fmt osd_fmt[SUBBITMAP_COUNT];
      pl_tex *sub_tex;
      int num_sub_tex;
-@@ -171,6 +198,7 @@ struct gl_next_opts {
+@@ -171,6 +200,7 @@ struct gl_next_opts {
      float background_blur_radius;
      float corner_rounding;
      bool inter_preserve;
@@ -186,7 +188,7 @@ index 3f0b18f4d..8e2204474 100644
      struct user_lut lut;
      struct user_lut image_lut;
      struct user_lut target_lut;
-@@ -208,6 +236,7 @@ const struct m_sub_options gl_next_conf = {
+@@ -208,6 +238,7 @@ const struct m_sub_options gl_next_conf = {
  #endif
          {"corner-rounding", OPT_FLOAT(corner_rounding), M_RANGE(0, 1)},
          {"interpolation-preserve", OPT_BOOL(inter_preserve)},
@@ -194,7 +196,7 @@ index 3f0b18f4d..8e2204474 100644
          {"lut", OPT_STRING(lut.opt), .flags = M_OPT_FILE},
          {"lut-type", OPT_CHOICE_C(lut.type, lut_types)},
          {"image-lut", OPT_STRING(image_lut.opt), .flags = M_OPT_FILE},
-@@ -998,6 +1027,487 @@ static enum pl_color_primaries get_best_prim_container(const struct pl_raw_prima
+@@ -998,6 +1029,560 @@ static enum pl_color_primaries get_best_prim_container(const struct pl_raw_prima
  static void update_hook_opts_dynamic(struct priv *p, const struct pl_hook *hook,
                                       const struct mp_image *mpi);
  
@@ -208,8 +210,10 @@ index 3f0b18f4d..8e2204474 100644
 +        p->framegen_global_cost_ns = info->last;
 +    else if (strstr(info->shader->description, "global motion reduce"))
 +        p->framegen_global_reduce_ns = info->last;
-+    else if (strstr(info->shader->description, "block motion"))
-+        p->framegen_motion_ns = info->last;
++    else if (strstr(info->shader->description, "block motion cost"))
++        p->framegen_local_cost_ns = info->last;
++    else if (strstr(info->shader->description, "block motion reduce"))
++        p->framegen_local_reduce_ns = info->last;
 +    else if (strstr(info->shader->description, "ReKazumi warp"))
 +        p->framegen_warp_ns = info->last;
 +}
@@ -229,7 +233,7 @@ index 3f0b18f4d..8e2204474 100644
 +            (unsigned long long) p->framegen_phases,
 +            (unsigned long long) p->framegen_bypasses,
 +            (p->framegen_global_cost_ns + p->framegen_global_reduce_ns) / 1e6,
-+            p->framegen_motion_ns / 1e6,
++            (p->framegen_local_cost_ns + p->framegen_local_reduce_ns) / 1e6,
 +            p->framegen_warp_ns / 1e6);
 +    p->framegen_stats_last_ns = now;
 +}
@@ -266,6 +270,23 @@ index 3f0b18f4d..8e2204474 100644
 +            .renderable = true,
 +            .storable = true)))
 +        return framegen_fail(vo, "offscreen texture allocation failed");
++    return true;
++}
++
++static bool framegen_recreate_cost_tex(struct vo *vo, pl_tex *tex, int w, int h)
++{
++    struct priv *p = vo->priv;
++    enum pl_fmt_caps caps = PL_FMT_CAP_SAMPLEABLE | PL_FMT_CAP_STORABLE;
++    pl_fmt format = pl_find_fmt(p->gpu, PL_FMT_FLOAT, 2, 16, 0, caps);
++    if (!format)
++        return framegen_fail(vo, "no sampleable/storable RG16F format");
++    if (!pl_tex_recreate(p->gpu, tex, pl_tex_params(
++            .w = w,
++            .h = h,
++            .format = format,
++            .sampleable = true,
++            .storable = true)))
++        return framegen_fail(vo, "cost texture allocation failed");
 +    return true;
 +}
 +
@@ -427,45 +448,38 @@ index 3f0b18f4d..8e2204474 100644
 +static bool framegen_dispatch_motion(struct vo *vo, int motion_w, int motion_h)
 +{
 +    struct priv *p = vo->priv;
-+    static const char motion_header[] =
++    static const char cost_header[] =
 +        "float fg_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n";
-+    static const char motion_body[] =
-+        "ivec2 block = ivec2(gl_GlobalInvocationID.xy);\n"
-+        "ivec2 field_size = imageSize(fg_motion_out);\n"
-+        "if (any(greaterThanEqual(block, field_size))) return;\n"
++    static const char cost_body[] =
++        "ivec2 atlas = ivec2(gl_GlobalInvocationID.xy);\n"
++        "ivec2 atlas_size = imageSize(fg_local_cost_out);\n"
++        "if (any(greaterThanEqual(atlas, atlas_size))) return;\n"
++        "ivec2 block = atlas / 17;\n"
++        "ivec2 candidate_index = atlas - block * 17;\n"
++        "vec2 local = vec2(candidate_index * 2 - 16);\n"
 +        "ivec2 image_size = textureSize(fg_source_a, 0);\n"
 +        "vec2 px = 1.0 / vec2(image_size);\n"
-+        "vec2 center = (vec2(block) + 0.5) / vec2(field_size);\n"
++        "vec2 center = (vec2(block) + 0.5) / vec2(atlas_size / 17);\n"
 +        "vec4 global = texelFetch(fg_global, ivec2(0), 0);\n"
-+        "vec2 best_f = global.xy, best_b = global.zw;\n"
-+        "float best_f_cost = 1e20, best_b_cost = 1e20;\n"
++        "vec2 candidate_f = global.xy + local;\n"
++        "vec2 candidate_b = global.zw + local;\n"
++        "float cost_f = 0.0, cost_b = 0.0;\n"
 +        "const vec2 taps[5] = vec2[5](vec2(0.0), vec2(-4.0, 0.0), "
 +        "vec2(4.0, 0.0), vec2(0.0, -4.0), vec2(0.0, 4.0));\n"
-+        "for (int cy = -16; cy <= 16; cy += 2) {\n"
-+        " for (int cx = -16; cx <= 16; cx += 2) {\n"
-+        "  vec2 local = vec2(cx, cy);\n"
-+        "  vec2 candidate_f = global.xy + local;\n"
-+        "  vec2 candidate_b = global.zw + local;\n"
-+        "  float cost_f = 0.0, cost_b = 0.0;\n"
-+        "  for (int tap = 0; tap < 5; tap++) {\n"
-+        "   vec2 base = taps[tap] * px;\n"
-+        "   float a0 = fg_luma(textureLod(fg_source_a, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
-+        "   float b0 = fg_luma(textureLod(fg_source_b, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
-+        "   float ac = fg_luma(textureLod(fg_source_a, clamp(center + base + candidate_b * px, 0.0, 1.0), 0.0).rgb);\n"
-+        "   float bc = fg_luma(textureLod(fg_source_b, clamp(center + base + candidate_f * px, 0.0, 1.0), 0.0).rgb);\n"
-+        "   cost_f += abs(a0 - bc);\n"
-+        "   cost_b += abs(b0 - ac);\n"
-+        "  }\n"
-+        "  cost_f += 0.001 * length(local);\n"
-+        "  cost_b += 0.001 * length(local);\n"
-+        "  if (cost_f < best_f_cost) { best_f_cost = cost_f; best_f = candidate_f; }\n"
-+        "  if (cost_b < best_b_cost) { best_b_cost = cost_b; best_b = candidate_b; }\n"
-+        " }\n"
++        "for (int tap = 0; tap < 5; tap++) {\n"
++        " vec2 base = taps[tap] * px;\n"
++        " float a0 = fg_luma(textureLod(fg_source_a, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
++        " float b0 = fg_luma(textureLod(fg_source_b, clamp(center + base, 0.0, 1.0), 0.0).rgb);\n"
++        " float ac = fg_luma(textureLod(fg_source_a, clamp(center + base + candidate_b * px, 0.0, 1.0), 0.0).rgb);\n"
++        " float bc = fg_luma(textureLod(fg_source_b, clamp(center + base + candidate_f * px, 0.0, 1.0), 0.0).rgb);\n"
++        " cost_f += abs(a0 - bc);\n"
++        " cost_b += abs(b0 - ac);\n"
 +        "}\n"
-+        "imageStore(fg_motion_out, block, vec4(best_f, best_b));\n"
-+        "imageStore(fg_score_out, block, vec4(best_f_cost / 5.0, best_b_cost / 5.0, 0.0, 0.0));\n";
++        "cost_f += 0.001 * length(local);\n"
++        "cost_b += 0.001 * length(local);\n"
++        "imageStore(fg_local_cost_out, atlas, vec4(cost_f, cost_b, 0.0, 0.0));\n";
 +
-+    struct pl_shader_desc descriptors[] = {
++    struct pl_shader_desc cost_descriptors[] = {
 +        {
 +            .desc = {.name = "fg_source_a", .type = PL_DESC_SAMPLED_TEX},
 +            .binding = {.object = p->framegen_source[0],
@@ -479,6 +493,65 @@ index 3f0b18f4d..8e2204474 100644
 +            .binding = {.object = p->framegen_global,
 +                        .sample_mode = PL_TEX_SAMPLE_NEAREST},
 +        }, {
++            .desc = {.name = "fg_local_cost_out", .type = PL_DESC_STORAGE_IMG,
++                     .access = PL_DESC_ACCESS_WRITEONLY},
++            .binding = {.object = p->framegen_local_cost},
++        },
++    };
++    int atlas_w = motion_w * 17;
++    int atlas_h = motion_h * 17;
++    pl_shader sh = pl_dispatch_begin(p->framegen_dispatch);
++    if (!pl_shader_custom(sh, &(struct pl_custom_shader) {
++            .header = cost_header,
++            .description = "ReKazumi block motion cost",
++            .body = cost_body,
++            .output = PL_SHADER_SIG_NONE,
++            .descriptors = cost_descriptors,
++            .num_descriptors = MP_ARRAY_SIZE(cost_descriptors),
++            .compute = true,
++            .compute_group_size = {8, 8},
++            .output_w = atlas_w,
++            .output_h = atlas_h,
++        }))
++    {
++        pl_dispatch_abort(p->framegen_dispatch, &sh);
++        return framegen_fail(vo, "block motion cost shader creation failed");
++    }
++    if (!pl_dispatch_compute(p->framegen_dispatch, pl_dispatch_compute_params(
++            .shader = &sh,
++            .dispatch_size = {MP_ALIGN_UP(atlas_w, 8) / 8,
++                              MP_ALIGN_UP(atlas_h, 8) / 8, 1},
++            .width = atlas_w,
++            .height = atlas_h)))
++        return framegen_fail(vo, "block motion cost dispatch failed");
++
++    static const char reduce_body[] =
++        "ivec2 block = ivec2(gl_GlobalInvocationID.xy);\n"
++        "ivec2 field_size = imageSize(fg_motion_out);\n"
++        "if (any(greaterThanEqual(block, field_size))) return;\n"
++        "vec4 global = texelFetch(fg_global, ivec2(0), 0);\n"
++        "vec2 best_f = global.xy, best_b = global.zw;\n"
++        "float best_f_cost = 1e20, best_b_cost = 1e20;\n"
++        "for (int y = 0; y < 17; y++) {\n"
++        " for (int x = 0; x < 17; x++) {\n"
++        "  vec2 cost = texelFetch(fg_local_cost, block * 17 + ivec2(x, y), 0).rg;\n"
++        "  vec2 local = vec2(ivec2(x, y) * 2 - 16);\n"
++        "  if (cost.r < best_f_cost) { best_f_cost = cost.r; best_f = global.xy + local; }\n"
++        "  if (cost.g < best_b_cost) { best_b_cost = cost.g; best_b = global.zw + local; }\n"
++        " }\n"
++        "}\n"
++        "imageStore(fg_motion_out, block, vec4(best_f, best_b));\n"
++        "imageStore(fg_score_out, block, vec4(best_f_cost / 5.0, best_b_cost / 5.0, 0.0, 0.0));\n";
++    struct pl_shader_desc reduce_descriptors[] = {
++        {
++            .desc = {.name = "fg_global", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_global,
++                        .sample_mode = PL_TEX_SAMPLE_NEAREST},
++        }, {
++            .desc = {.name = "fg_local_cost", .type = PL_DESC_SAMPLED_TEX},
++            .binding = {.object = p->framegen_local_cost,
++                        .sample_mode = PL_TEX_SAMPLE_NEAREST},
++        }, {
 +            .desc = {.name = "fg_motion_out", .type = PL_DESC_STORAGE_IMG,
 +                     .access = PL_DESC_ACCESS_WRITEONLY},
 +            .binding = {.object = p->framegen_motion},
@@ -488,14 +561,13 @@ index 3f0b18f4d..8e2204474 100644
 +            .binding = {.object = p->framegen_score},
 +        },
 +    };
-+    pl_shader sh = pl_dispatch_begin(p->framegen_dispatch);
++    sh = pl_dispatch_begin(p->framegen_dispatch);
 +    if (!pl_shader_custom(sh, &(struct pl_custom_shader) {
-+            .header = motion_header,
-+            .description = "ReKazumi coarse bidirectional block motion",
-+            .body = motion_body,
++            .description = "ReKazumi block motion reduce",
++            .body = reduce_body,
 +            .output = PL_SHADER_SIG_NONE,
-+            .descriptors = descriptors,
-+            .num_descriptors = MP_ARRAY_SIZE(descriptors),
++            .descriptors = reduce_descriptors,
++            .num_descriptors = MP_ARRAY_SIZE(reduce_descriptors),
 +            .compute = true,
 +            .compute_group_size = {8, 8},
 +            .output_w = motion_w,
@@ -503,7 +575,7 @@ index 3f0b18f4d..8e2204474 100644
 +        }))
 +    {
 +        pl_dispatch_abort(p->framegen_dispatch, &sh);
-+        return framegen_fail(vo, "motion shader creation failed");
++        return framegen_fail(vo, "block motion reduction shader creation failed");
 +    }
 +
 +    if (!pl_dispatch_compute(p->framegen_dispatch, pl_dispatch_compute_params(
@@ -512,7 +584,7 @@ index 3f0b18f4d..8e2204474 100644
 +                              MP_ALIGN_UP(motion_h, 8) / 8, 1},
 +            .width = motion_w,
 +            .height = motion_h)))
-+        return framegen_fail(vo, "motion shader dispatch failed");
++        return framegen_fail(vo, "block motion reduction dispatch failed");
 +    return true;
 +}
 +
@@ -532,10 +604,13 @@ index 3f0b18f4d..8e2204474 100644
 +    int motion_h = MP_ALIGN_UP(h, 16) / 16;
 +    if (!framegen_render_source(vo, 0, first, w, h) ||
 +        !framegen_render_source(vo, 1, second, w, h) ||
-+        !framegen_recreate_tex(vo, &p->framegen_global_cost, 33, 33) ||
++        !framegen_recreate_cost_tex(vo, &p->framegen_global_cost, 33, 33) ||
 +        !framegen_recreate_tex(vo, &p->framegen_global, 1, 1) ||
++        !framegen_recreate_cost_tex(vo, &p->framegen_local_cost,
++                                    motion_w * 17, motion_h * 17) ||
 +        !framegen_recreate_tex(vo, &p->framegen_motion, motion_w, motion_h) ||
-+        !framegen_recreate_tex(vo, &p->framegen_score, motion_w, motion_h) ||
++        !framegen_recreate_cost_tex(vo, &p->framegen_score,
++                                    motion_w, motion_h) ||
 +        !framegen_dispatch_global_motion(vo) ||
 +        !framegen_dispatch_motion(vo, motion_w, motion_h))
 +        return false;
@@ -682,7 +757,7 @@ index 3f0b18f4d..8e2204474 100644
  static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  {
      struct priv *p = vo->priv;
-@@ -1007,15 +1517,24 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1007,15 +1592,24 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
  
      struct pl_render_params params = pars->params;
      const struct gl_video_opts *opts = p->opts_cache->opts;
@@ -710,7 +785,7 @@ index 3f0b18f4d..8e2204474 100644
      if (frame->still)
          params.frame_mixer = NULL;
  
-@@ -1055,6 +1574,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1055,6 +1649,9 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
          if (p->want_reset) {
              pl_renderer_flush_cache(p->rr);
              pl_queue_reset(p->queue);
@@ -720,7 +795,7 @@ index 3f0b18f4d..8e2204474 100644
              p->last_pts = 0.0;
              p->last_id = 0;
              p->want_reset = false;
-@@ -1242,7 +1764,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1242,7 +1839,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
              struct pl_queue_params qparams = *pl_queue_params(
                  .pts = frame->current->pts + pts_offset,
                  .radius = pl_frame_mix_radius(&params),
@@ -730,7 +805,7 @@ index 3f0b18f4d..8e2204474 100644
              );
  #if PL_API_VER >= 340
              qparams.drift_compensation = 0;
-@@ -1311,7 +1834,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1311,7 +1909,8 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
          struct pl_queue_params qparams = *pl_queue_params(
              .pts = frame->current->pts + pts_offset,
              .radius = pl_frame_mix_radius(&params),
@@ -740,7 +815,7 @@ index 3f0b18f4d..8e2204474 100644
              .interpolation_threshold = opts->interpolation_threshold,
          );
  #if PL_API_VER >= 340
-@@ -1399,8 +1923,21 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1399,8 +1998,21 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
              update_hook_opts_dynamic(p, p->hooks[i], frame->current);
      }
  
@@ -764,7 +839,7 @@ index 3f0b18f4d..8e2204474 100644
          MP_ERR(vo, "Failed rendering frame!\n");
          goto done;
      }
-@@ -1426,7 +1963,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
+@@ -1426,7 +2038,7 @@ static bool draw_frame(struct vo *vo, struct vo_frame *frame)
      }
      mp_mutex_unlock(&vo->params_mutex);
  
@@ -773,7 +848,7 @@ index 3f0b18f4d..8e2204474 100644
      valid = true;
      // fall through
  
-@@ -2077,6 +2614,15 @@ static void uninit(struct vo *vo)
+@@ -2077,6 +2689,16 @@ static void uninit(struct vo *vo)
  {
      struct priv *p = vo->priv;
      pl_queue_destroy(&p->queue); // destroy this first
@@ -783,13 +858,14 @@ index 3f0b18f4d..8e2204474 100644
 +    }
 +    pl_tex_destroy(p->gpu, &p->framegen_global_cost);
 +    pl_tex_destroy(p->gpu, &p->framegen_global);
++    pl_tex_destroy(p->gpu, &p->framegen_local_cost);
 +    pl_tex_destroy(p->gpu, &p->framegen_motion);
 +    pl_tex_destroy(p->gpu, &p->framegen_score);
 +    pl_dispatch_destroy(&p->framegen_dispatch);
      for (int i = 0; i < MP_ARRAY_SIZE(p->osd_state.entries); i++)
          pl_tex_destroy(p->gpu, &p->osd_state.entries[i].tex);
      for (int i = 0; i < p->num_sub_tex; i++)
-@@ -2102,6 +2648,7 @@ static void uninit(struct vo *vo)
+@@ -2102,6 +2724,7 @@ static void uninit(struct vo *vo)
      pl_lut_free(&p->next_opts->target_lut.lut);
  
      pl_icc_close(&p->icc_profile);
@@ -797,7 +873,7 @@ index 3f0b18f4d..8e2204474 100644
      pl_renderer_destroy(&p->rr);
  
      for (int i = 0; i < VO_PASS_PERF_MAX; ++i) {
-@@ -2164,6 +2711,20 @@ static int preinit(struct vo *vo)
+@@ -2164,6 +2787,20 @@ static int preinit(struct vo *vo)
      pl_gpu_set_cache(p->gpu, p->shader_cache.cache);
      p->rr = pl_renderer_create(p->pllog, p->gpu);
      p->queue = pl_queue_create(p->gpu);
@@ -818,7 +894,7 @@ index 3f0b18f4d..8e2204474 100644
      p->osd_fmt[SUBBITMAP_LIBASS] = pl_find_named_fmt(p->gpu, "r8");
      p->osd_fmt[SUBBITMAP_BGRA] = pl_find_named_fmt(p->gpu, "bgra8");
      p->osd_sync = 1;
-@@ -2529,6 +3090,10 @@ static void update_render_options(struct vo *vo)
+@@ -2529,6 +3166,10 @@ static void update_render_options(struct vo *vo)
                        (pars->params.skip_anti_aliasing ? 1 : 2);
      }
      vo_set_queue_params(vo, 0, MPMIN(VO_MAX_REQ_FRAMES, req_frames));
@@ -829,4 +905,3 @@ index 3f0b18f4d..8e2204474 100644
  
      pars->params.deband_params = opts->deband ? &pars->deband_params : NULL;
      pars->deband_params.iterations = opts->deband_opts->iterations;
-
