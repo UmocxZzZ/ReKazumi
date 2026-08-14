@@ -1325,3 +1325,170 @@
   Android Vulkan offscreen output, phase, and GPU-time harness. Do not install,
   launch, present, change refresh rate, or enable Dart 3x before that harness
   passes and a separate short-presentation candidate is explicitly prepared.
+
+### Android Vulkan offscreen validation (2026-08-14)
+
+- Began the next authorized phase with an offscreen-only boundary: no Surface,
+  ANativeWindow, swapchain, display-rate change, playback, automatic launch,
+  runtime pin, or Dart 3x availability. The harness must run only through a new
+  explicit method-channel call and return structured diagnostics; the existing
+  capability probe and playback path must not invoke it automatically.
+- A grouped read-only inspection guessed workflow filenames
+  `.github/workflows/pr_workflow.yml` and `build-android.yml`; both paths do not
+  exist, so that grouped tool call returned nonzero and suppressed its other
+  parallel outputs. This changed nothing. Listing the directory found the
+  actual Android gate at `validate-rife-android.yml`, then inspection succeeded.
+- Planned first offscreen gate: create a private Vulkan instance/device/compute
+  queue with no presentation extensions, verify RG16F/RGBA16F sampled/storage
+  capabilities, execute a deterministic embedded compute shader for `t=1/3`
+  and `t=2/3` on synthetic FP16 colors, copy only the tiny validation result to
+  a host buffer, and record GPU timestamps. Use a bounded fence wait and destroy
+  every object on return. This validates driver shader execution, phase math,
+  formats, synchronization, and timing without touching the display stack. It
+  does not enable the production transport or claim full algorithm quality.
+- Implemented the first isolated harness in source: a reproducible Vulkan 1.1
+  compute shader, embedded SPIR-V, explicit `validateOffscreen` method-channel
+  call, bounded 8-second Dart/5-second native waits, RG16F/RGBA16F capability
+  checks, synthetic FP16 1/3 and 2/3 output readback, GPU timestamps, and
+  fail-closed structured results. It creates no Surface, swapchain, or present
+  call and leaves `transportBackendImplemented=false`. Added parser tests and a
+  CI step that recompiles the shader, compares it byte-for-byte with the
+  embedded words, checks native markers, and rejects presentation symbols.
+- The first `dart format` invocation through Flutter's `dart.bat` wrapper
+  exceeded a 30-second local timeout without output. No Dart process remained;
+  source inspection showed only the intended additions, but formatting cannot
+  be credited as successful. Retry must call the pinned SDK `dart.exe`
+  directly, then use its explicit exit result before testing.
+- Direct `dart.exe format` initially failed because the restricted sandbox
+  denied creation of Dart's user-level analytics directory under AppData. It
+  changed no source. Repeating the same two-file format operation with approved
+  user-config access succeeded and reported both files already formatted.
+  Focused `flutter test --no-pub
+  test/frame_generation_capability_service_test.dart` then passed all nine
+  tests, including successful no-surface parsing, native mismatch fail-close,
+  timeout, and single-invocation caching.
+- Planned compile gate: build an arm64 release APK only to compile/link the new
+  Vulkan JNI library and package it for inspection. Do not copy it into a
+  candidate directory, publish it, install it, launch it, or change the safe
+  libmpv pin. Require C++ `-Werror`, Kotlin/Dart compilation, shader identity,
+  package markers, and absence of Surface/swapchain/present symbols first.
+- The local arm64 release build completed in 153.8 seconds and produced the
+  ordinary build-output APK only; it was not copied, published, or installed.
+  Existing NDK-version advisory output remained (notably `jni` requests 28.2),
+  but C++ `-Werror`, Kotlin, Dart, linking, and packaging succeeded. APK size is
+  50,273,686 bytes, SHA-256
+  `bfb1d88059de4a3c9e338781e74a0fc7f0c9941b1449aa1969425e5f3bb89489`.
+  Package id/name remain `com.predidit.rekazumi` / `ReKazumi`.
+- The packaged arm64 offscreen library is 920,112 bytes, SHA-256
+  `ba2db03a6f09b147a1c8cfd03ad25b892e9d52a3dc59088d9dc562ddb24fdd84`.
+  It contains the validation marker, exact shader hash, fail-closed transport
+  field, and explicit JNI entry; binary inspection found no `ANativeWindow`,
+  `vkCreateSwapchainKHR`, or `vkQueuePresentKHR`. Packaged arm64 `libmpv.so`
+  still hashes to the safe pinned
+  `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  Recompiled shader and 303 embedded words both independently hash to
+  `f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49`.
+- Timeout-path review corrected the initial cleanup assumption. Destroying
+  Vulkan resources after a submitted command exceeds its fence deadline can be
+  invalid because work may still be executing; calling `vkDeviceWaitIdle`
+  would reintroduce an unbounded hang. The one-shot harness now quarantines and
+  intentionally leaves its private no-surface instance/device for OS cleanup on
+  a true fence timeout, reports `resourcesQuarantined=true`, and fails the gate.
+  Normal and all pre-submit failure paths still destroy every created object.
+- A first NDK `clang-format --dry-run --Werror` check could not execute inside
+  the restricted sandbox (`Permission denied`) and changed no files. The same
+  read-only check with approved tool execution then showed that both the new
+  offscreen files and the long-existing `rekazumi_framegen.cpp` do not match
+  the NDK tool's default formatting style. Reformatting the existing probe
+  would create a large unrelated rewrite. Decision: mechanically format only
+  the newly introduced `rekazumi_offscreen.cpp` and `.h`, keep the existing
+  probe's established style, and validate the new files independently.
+- A follow-up read-only formatter lookup incorrectly assumed `ANDROID_HOME` or
+  `ANDROID_SDK_ROOT` was populated in the current shell and therefore probed
+  `C:\\ndk\\...`, which does not exist. It changed nothing. Reading the existing
+  `android/local.properties` resolved the configured SDK correctly at
+  `C:\\Users\\Skrindo\\AppData\\Local\\Android\\sdk`.
+- NDK `clang-format -i` was applied only to the two newly introduced offscreen
+  C++ files; their subsequent independent `--dry-run --Werror` check passed.
+  Review then found that the Dart pass predicate trusted the native boolean
+  fields without requiring the exact validation marker and full embedded
+  shader SHA-256. Tightened the gate to require both identities, added a
+  mismatch regression test, and made CI require the timeout-quarantine marker
+  in the packaged native binary as well.
+- After those changes, direct Dart formatting reported no changes and the
+  focused capability/offscreen suite passed all 10 tests. The incremental
+  arm64 release rebuild then succeeded in 83.7 seconds (Gradle 78.0 seconds).
+  The existing NDK advisory remains: the app selects 27.2, most plugins request
+  27.0, and `jni` requests 28.2. This is an advisory after a successful build,
+  not a new compile failure, and no APK was copied, published, or installed.
+- The first post-build binary-inspection command retrieved the build files but
+  the restricted sandbox denied execution of NDK `llvm-strings.exe`; its table
+  formatting also hid the useful hash columns. No files changed. Repeat the
+  same read-only inspection with approved SDK-tool execution and explicit
+  line-oriented output before accepting the package.
+- Approved post-build inspection found APK SHA-256
+  `2e9ac66620f3ff78a7f1708571de6f41486c856ce2f0932f4b5abe17c1c2f388`
+  (50,273,810 bytes), native harness SHA-256
+  `6b386a0a19eb8a4d29c8017b762d3ac02989f479c90e64ff5cc40da45e532313`
+  (920,208 bytes), and unchanged safe `libmpv.so` SHA-256
+  `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  Package identity remains `com.predidit.rekazumi` / `ReKazumi`; validation and
+  shader markers are present and presentation symbols are absent.
+- That inspection also caught a CI-test design error before push: although the
+  structured JSON key `resourcesQuarantined` exists and the Dart test covers
+  it, the compiler did not retain that short key as one contiguous entry in
+  the binary string table, so a `strings | grep` binary check would fail. This
+  is not a missing quarantine implementation. Replaced the brittle binary key
+  check with an explicit versioned `ReKazumi offscreen timeout quarantine v1`
+  policy marker returned by the native report and required by CI. Rebuild and
+  re-inspect the marker before accepting the candidate.
+- Reformatting and the second incremental build succeeded in 22.5 seconds
+  (Gradle 16.7 seconds). The explicit timeout-policy, validation, and shader
+  markers are all present; presentation symbols remain absent. APK SHA-256 is
+  `80bdc176b92198c36589ec0a53623e8ad1c254090de7a77f09533afc789e2cd9`
+  (50,273,942 bytes), native harness SHA-256 is
+  `ef544682a818704e0dee248793faa5f92ff7110ad49d4a31daae23fdb219676c`
+  (920,320 bytes), and the safe `libmpv.so` hash is still unchanged. This
+  build remains inspection-only and was not installed or published.
+- Full Flutter tests then passed 150/150. Static analysis exited successfully
+  with no warning/error and the same 18 pre-existing info-level findings.
+  Recompiling the shader with NDK 27.2 produced exact SHA-256
+  `f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49`;
+  independently decoding all 303 embedded words in memory produced the same
+  hash.
+- Final source review found the implementation did not yet meet its recorded
+  one-shot property: each Dart service cached its call, but constructing a new
+  service could execute the native harness again. Moved caching into the native
+  function via thread-safe function-local static initialization, making it one
+  Vulkan execution per app process even across service instances. Also reject
+  zero GPU timestamp deltas in native and Dart, with a regression test, so the
+  timing portion cannot be reported as validated without an actual measurement.
+- After native one-shot/timestamp hardening, NDK formatting passed, direct Dart
+  formatting changed nothing, the focused suite passed 11/11, and the final
+  arm64 release build succeeded in 82.5 seconds (Gradle 71.2 seconds). Final
+  inspection-only APK SHA-256 is
+  `6bb9561bf10242e99b50773aa1a98f94dd2f64de5f0dda23362126d920c44aa0`
+  (50,274,766 bytes); native harness SHA-256 is
+  `b423fc820cfdb149769d011d9d5127686c4fddc5a072a7c44ff788bf864040ae`
+  (920,808 bytes); safe `libmpv.so` remains
+  `7deb3537ac6de412185a1dc95900a4b2ebf74737937652bde7cd780c4cab095a`.
+  Validation, shader, timeout-policy, and zero-timestamp rejection markers are
+  present; `ANativeWindow`, swapchain creation, and queue presentation symbols
+  are absent. `git diff --check` passed. No APK/device operation occurred.
+- Planned Git operation: stage only the workflow, journal, CMake/native shader
+  and offscreen harness, JNI/Kotlin bridge, Dart fail-closed service, and its
+  tests. Explicitly exclude user/unrelated `pubspec.lock` status plus generated
+  `device-build/`, package build output, `work/`, and ordinary APK output. Check
+  the cached scope and whitespace, commit this offscreen validation gate, push
+  through `mixed:10808`, then require the Android workflow to pass before any
+  separate device-invocation design is considered.
+- Exact staging selected only the 11 intended paths and excluded every listed
+  unrelated/generated path. The first cached whitespace check found one new
+  blank line at EOF in the generated SPIR-V header. This is a packaging-text
+  issue only; remove that final blank line, restage only the header/journal, and
+  require the cached check to return success before committing.
+- Removed the extra EOF blank line, then cached whitespace and exact 11-path
+  comparison passed. Created local commit `0e1f57c` (`test: add Vulkan offscreen
+  validation gate`), with unrelated `pubspec.lock` and generated directories
+  still outside the commit. Amend this journal entry into that unpushed commit,
+  push the resulting hash through `mixed:10808`, and require its Android CI.

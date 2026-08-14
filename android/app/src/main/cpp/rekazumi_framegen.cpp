@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "rekazumi_offscreen.h"
+
 namespace {
 
 constexpr char kProbeMarker[] = "ReKazumi framegen capability probe v1";
@@ -234,5 +236,12 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_predidit_rekazumi_MainActivity_probeNativeVulkanCapabilities(
     JNIEnv* environment, jobject /* activity */) {
   const std::string result = ProbeVulkan();
+  return environment->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_predidit_rekazumi_MainActivity_validateNativeVulkanOffscreen(
+    JNIEnv* environment, jobject /* activity */) {
+  const std::string result = rekazumi::ValidateVulkanOffscreen();
   return environment->NewStringUTF(result.c_str());
 }

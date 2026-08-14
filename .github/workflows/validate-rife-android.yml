@@ -83,6 +83,32 @@ jobs:
           --dart-define=KAZUMI_APPID=
           --dart-define=KAZUMI_KEY=
 
+      - name: Verify embedded offscreen validation shader
+        run: |
+          GLSLC="$(find "$ANDROID_SDK_ROOT/ndk/27.2.12479018/shader-tools" \
+            -type f -name glslc -print -quit)"
+          test -x "$GLSLC"
+          "$GLSLC" --target-env=vulkan1.1 -O \
+            android/app/src/main/cpp/framegen_offscreen.comp \
+            -o /tmp/framegen-offscreen-ci.spv
+          echo 'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49  /tmp/framegen-offscreen-ci.spv' \
+            | sha256sum --check --strict
+          python - android/app/src/main/cpp/framegen_offscreen_spv.h \
+            /tmp/framegen-offscreen-embedded.spv <<'PY'
+          import re
+          import struct
+          import sys
+
+          source = open(sys.argv[1], encoding='utf-8').read()
+          body = source.split('kFramegenOffscreenSpirv[] = {', 1)[1]
+          body = body.split('};', 1)[0]
+          words = [int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]+)u', body)]
+          with open(sys.argv[2], 'wb') as output:
+              output.write(struct.pack('<' + 'I' * len(words), *words))
+          PY
+          cmp /tmp/framegen-offscreen-ci.spv \
+            /tmp/framegen-offscreen-embedded.spv
+
       - name: Verify native playback libraries are packaged
         run: |
           unzip -l build/app/outputs/flutter-apk/app-release.apk > /tmp/apk-contents.txt
@@ -103,6 +129,14 @@ jobs:
             lib/arm64-v8a/librekazumi_framegen.so > /tmp/rekazumi-framegen-probe.so
           strings /tmp/rekazumi-framegen-probe.so \
             | grep -q 'ReKazumi framegen capability probe v1'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi Vulkan offscreen phase validation v1'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49'
+          strings /tmp/rekazumi-framegen-probe.so \
+            | grep -q 'ReKazumi offscreen timeout quarantine v1'
+          ! strings /tmp/rekazumi-framegen-probe.so \
+            | grep -Eq 'ANativeWindow|vkCreateSwapchainKHR|vkQueuePresentKHR'
           METADATA_PATH="$(find build/app/outputs -name output-metadata.json -print -quit)"
           test -n "$METADATA_PATH"
           python - "$METADATA_PATH" <<'PY'

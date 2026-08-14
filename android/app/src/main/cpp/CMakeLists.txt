@@ -5,6 +5,7 @@ project(rekazumi_framegen LANGUAGES CXX)
 add_library(
     rekazumi_framegen
     SHARED
+    rekazumi_offscreen.cpp
     rekazumi_framegen.cpp
 )
 

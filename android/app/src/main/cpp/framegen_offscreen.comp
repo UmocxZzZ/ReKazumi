@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform readonly image2D source_a;
+layout(rgba16f, set = 0, binding = 1) uniform readonly image2D source_b;
+layout(rgba16f, set = 0, binding = 2) uniform writeonly image2D output_frame;
+
+layout(push_constant) uniform Phase {
+    float t;
+} phase;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(output_frame);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+    vec4 a = imageLoad(source_a, pixel);
+    vec4 b = imageLoad(source_b, pixel);
+    imageStore(output_frame, pixel, mix(a, b, phase.t));
+}

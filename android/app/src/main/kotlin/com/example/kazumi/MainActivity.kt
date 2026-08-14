@@ -136,6 +136,10 @@ class MainActivity: AudioServiceActivity() {
                     val capabilities = probeVulkanCapabilities()
                     runOnUiThread { result.success(capabilities) }
                 }
+                "validateOffscreen" -> frameGenerationProbeExecutor.execute {
+                    val validation = validateVulkanOffscreen()
+                    runOnUiThread { result.success(validation) }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -255,6 +259,60 @@ class MainActivity: AudioServiceActivity() {
     }
 
     private external fun probeNativeVulkanCapabilities(): String
+
+    private fun validateVulkanOffscreen(): Map<String, Any> {
+        val validation = mutableMapOf<String, Any>(
+            "validationComplete" to false,
+            "noSurface" to true,
+            "rgba16fReady" to false,
+            "rg16fReady" to false,
+            "shaderExecuted" to false,
+            "phase13Valid" to false,
+            "phase23Valid" to false,
+            "resourcesQuarantined" to false,
+            "phase13GpuNs" to 0L,
+            "phase23GpuNs" to 0L,
+            "transportBackendImplemented" to false,
+            "error" to "",
+        )
+        val loadError = nativeFrameGenerationLoadError
+        if (loadError != null) {
+            validation["error"] = "native_library_unavailable_$loadError"
+            return validation
+        }
+        try {
+            val native = JSONObject(validateNativeVulkanOffscreen())
+            validation["validationMarker"] =
+                native.optString("validationMarker", "")
+            validation["shaderSha256"] = native.optString("shaderSha256", "")
+            validation["validationComplete"] =
+                native.optBoolean("validationComplete", false)
+            validation["noSurface"] = native.optBoolean("noSurface", false)
+            validation["rgba16fReady"] =
+                native.optBoolean("rgba16fReady", false)
+            validation["rg16fReady"] = native.optBoolean("rg16fReady", false)
+            validation["shaderExecuted"] =
+                native.optBoolean("shaderExecuted", false)
+            validation["phase13Valid"] = native.optBoolean("phase13Valid", false)
+            validation["phase23Valid"] = native.optBoolean("phase23Valid", false)
+            validation["resourcesQuarantined"] =
+                native.optBoolean("resourcesQuarantined", false)
+            validation["phase13GpuNs"] = native.optLong("phase13GpuNs", 0L)
+            validation["phase23GpuNs"] = native.optLong("phase23GpuNs", 0L)
+            validation["phase13Red"] = native.optDouble("phase13Red", 0.0)
+            validation["phase23Red"] = native.optDouble("phase23Red", 0.0)
+            validation["deviceName"] = native.optString("deviceName", "")
+            validation["transportBackendImplemented"] = false
+            validation["error"] = native.optString("error", "")
+        } catch (error: LinkageError) {
+            validation["error"] = error.javaClass.simpleName
+        } catch (error: RuntimeException) {
+            validation["error"] = error.javaClass.simpleName
+        }
+        return validation
+    }
+
+    private external fun validateNativeVulkanOffscreen(): String
 
     private fun systemFeatureVersion(featureName: String): Int {
         return packageManager.systemAvailableFeatures

@@ -144,4 +144,119 @@ void main() {
     expect(identical(first, second), isTrue);
     expect(invocations, 1);
   });
+
+  test('accepts a complete no-surface offscreen phase validation', () async {
+    final service = FrameGenerationOffscreenValidationService(
+      invoke: () async => <Object?, Object?>{
+        'validationMarker': 'ReKazumi Vulkan offscreen phase validation v1',
+        'shaderSha256':
+            'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49',
+        'validationComplete': true,
+        'noSurface': true,
+        'rgba16fReady': true,
+        'rg16fReady': true,
+        'shaderExecuted': true,
+        'phase13Valid': true,
+        'phase23Valid': true,
+        'resourcesQuarantined': false,
+        'phase13GpuNs': 12000,
+        'phase23GpuNs': 11000,
+        'phase13Red': 1 / 3,
+        'phase23Red': 2 / 3,
+        'transportBackendImplemented': false,
+        'error': '',
+      },
+    );
+
+    final validation = await service.validate();
+
+    expect(validation.passed, isTrue);
+    expect(validation.phase13GpuNs, 12000);
+    expect(validation.phase23GpuNs, 11000);
+    expect(validation.transportBackendImplemented, isFalse);
+  });
+
+  test('offscreen validation fails closed on native mismatch', () async {
+    final service = FrameGenerationOffscreenValidationService(
+      invoke: () async => <Object?, Object?>{
+        'validationComplete': false,
+        'noSurface': true,
+        'shaderExecuted': true,
+        'phase13Valid': false,
+        'phase23Valid': true,
+        'transportBackendImplemented': false,
+        'error': 'offscreen_phase_output_mismatch',
+      },
+    );
+
+    final validation = await service.validate();
+
+    expect(validation.passed, isFalse);
+    expect(validation.nativeError, 'offscreen_phase_output_mismatch');
+  });
+
+  test('offscreen validation rejects an unexpected shader identity', () async {
+    final service = FrameGenerationOffscreenValidationService(
+      invoke: () async => <Object?, Object?>{
+        'validationMarker': 'ReKazumi Vulkan offscreen phase validation v1',
+        'shaderSha256': 'unexpected',
+        'validationComplete': true,
+        'noSurface': true,
+        'rgba16fReady': true,
+        'rg16fReady': true,
+        'shaderExecuted': true,
+        'phase13Valid': true,
+        'phase23Valid': true,
+        'resourcesQuarantined': false,
+        'transportBackendImplemented': false,
+        'error': '',
+      },
+    );
+
+    expect((await service.validate()).passed, isFalse);
+  });
+
+  test('offscreen validation rejects zero GPU timestamp deltas', () async {
+    final service = FrameGenerationOffscreenValidationService(
+      invoke: () async => <Object?, Object?>{
+        'validationMarker': 'ReKazumi Vulkan offscreen phase validation v1',
+        'shaderSha256':
+            'f85d4f123b2f29b864439c1488c6fdc2361be6456746119c7230c9ad0a510b49',
+        'validationComplete': true,
+        'noSurface': true,
+        'rgba16fReady': true,
+        'rg16fReady': true,
+        'shaderExecuted': true,
+        'phase13Valid': true,
+        'phase23Valid': true,
+        'resourcesQuarantined': false,
+        'phase13GpuNs': 0,
+        'phase23GpuNs': 1,
+        'transportBackendImplemented': false,
+        'error': '',
+      },
+    );
+
+    expect((await service.validate()).passed, isFalse);
+  });
+
+  test('offscreen validation times out and is invoked once', () async {
+    var invocations = 0;
+    final service = FrameGenerationOffscreenValidationService(
+      timeout: const Duration(milliseconds: 5),
+      invoke: () async {
+        invocations++;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        return <Object?, Object?>{};
+      },
+    );
+
+    final first = await service.validate();
+    final second = await service.validate();
+
+    expect(first.passed, isFalse);
+    expect(first.invocationError, 'TimeoutException');
+    expect(identical(first, second), isTrue);
+    expect(invocations, 1);
+  });
 }
